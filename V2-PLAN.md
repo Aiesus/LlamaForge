@@ -735,3 +735,18 @@ canvas.image = photo  # keep reference
 | Inline chat panel (SSE streaming) | ✅ |
 | Image generation server (sd.cpp) | planned — see Future Feature section |
 | exe build spec | not started |
+
+---
+
+## Git History
+
+| Hash | Date | Summary |
+|------|------|---------|
+| `5823859` | 2026-06-10 | **Initial commit** — V2 working baseline with all tabs, profiles, download manager, CUDA swap |
+| `e8f6bbe` | 2026-06-10 | **Add .gitignore** — exclude `__pycache__`, `crash.log`, bench results |
+| `d0de991` | 2026-06-11 | **Feature batch** — concurrent download queue (max 3), Cancel/Clear Done, live progress/speed, `Have` column, popular model auto-load, click-to-sort, MoE/REAP/MTP/Coder filter checkboxes, Tags column, action buttons moved to left panel Tools section, log toggle stub pane, `--chat-template-file` control, model list default sort by size desc, pane sash restore fix |
+| `98cb1dd` | 2026-06-11 | **Feature batch** — inline chat panel (SSE streaming, vertical split, auto-show on server ready, New Chat, system prompt), Vision/Audio/ImgGen filter checkboxes, REAP niche API query augment, file sizes fixed (`?blobs=true`), llama UI button passes API key, image gen server plan in V2-PLAN.md, `TYPE_CHECKING` annotations on all GUI classes |
+| `5939ac6` | 2026-06-11 | **Debugging tools** — crash log viewer (left panel, red badge), log filter entry (live buffer replay, 3000 cap), Copy Log button; monitor.py: single PowerShell call for Win CPU%+RAM; HealthChecker skip_fn to stop polling when server stopped |
+| `32517d0` | 2026-06-11 | **Hermes + sash fixes** — port V1 Electron detection + CLI launch + UI open; `.gguf` strip on model sync; config auto-detect from `%LOCALAPPDATA%`; fix `url`/`ui_url` key mismatch; add `…` browse buttons to agent editor; fix pane sash persistence (`sashpos()` doesn't exist — use `sash_coord()`/`sash_place()`) |
+| `2d01876` | 2026-06-11 | **Hermes config bootstrap** — create `config.yaml` on first sync if missing; always write `provider: custom` so Hermes uses `base_url` and not a cloud provider fallback |
+| `609e374` | 2026-06-11 | **Hermes auto-detect** — `find_hermes_exe()` / `find_hermes_config()` check standard install paths; agent editor auto-populates blank fields on open; orange install note with URL shown when Hermes not found on disk |
