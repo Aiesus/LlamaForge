@@ -191,8 +191,18 @@ class _AgentEditor(tk.Toplevel):
 
     def _build(self, T: dict) -> None:
         from tkinter import filedialog
-        a = self._agent
+        import core.agents as agents_core
+        a   = self._agent
         pad = dict(padx=12, pady=4)
+
+        # Auto-populate blank paths for known agent types
+        if a.get("type") == "hermes":
+            if not a.get("exe"):
+                found = agents_core.find_hermes_exe()
+                if found:
+                    a["exe"] = found
+            if not a.get("config"):
+                a["config"] = agents_core.find_hermes_config()
 
         # Fields: (label, key, browse_type)  browse_type: None | "exe" | "file"
         fields = [
@@ -232,6 +242,14 @@ class _AgentEditor(tk.Toplevel):
                           )).grid(row=row, column=2, padx=(0, 12), pady=4)
 
         n_rows = len(fields)
+
+        # Hermes install note — shown when exe not found on disk
+        if a.get("type") == "hermes" and not agents_core.find_hermes_exe():
+            tk.Label(self,
+                     text="Hermes not found — install from hermes-agent.nousresearch.com",
+                     bg=T["bg"], fg=T["orange"], font=("Segoe UI", 8),
+                     ).grid(row=n_rows, column=0, columnspan=3, padx=12, pady=(0, 4), sticky="w")
+            n_rows += 1
         self._enabled_var   = tk.BooleanVar(value=a.get("enabled", True))
         self._sync_var      = tk.BooleanVar(value=a.get("auto_sync_model", False))
         tk.Checkbutton(self, text="Enabled", variable=self._enabled_var,

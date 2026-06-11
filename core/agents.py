@@ -13,6 +13,26 @@ from typing import Callable
 
 LogFn = Callable[[str, str | None], None]
 
+# ── Hermes discovery ──────────────────────────────────────────────────────────
+
+def find_hermes_exe() -> str | None:
+    """Return the Hermes Electron exe path if found in the standard install location."""
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        Path(localappdata) / "hermes" / "hermes-agent" / "apps" / "desktop"
+            / "release" / "win-unpacked" / "Hermes.exe",
+        Path(localappdata) / "hermes" / "hermes-agent" / "venv" / "Scripts" / "hermes.exe",
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def find_hermes_config() -> str:
+    """Return the standard Hermes config path (may not exist yet)."""
+    return str(Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "config.yaml")
+
 
 def start(agent: dict, log_fn: LogFn) -> subprocess.Popen | None:
     """Launch an agent process. Returns the Popen handle or None on failure."""
