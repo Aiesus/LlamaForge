@@ -15,6 +15,24 @@ LogFn = Callable[[str, str | None], None]
 
 # ── Hermes discovery ──────────────────────────────────────────────────────────
 
+def check_running_by_name(process_pattern: str) -> bool:
+    """Return True if a process matching pattern is running (Windows tasklist)."""
+    try:
+        r = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {process_pattern}", "/NH"],
+            capture_output=True, text=True, timeout=4,
+        )
+        return process_pattern.lower().rstrip("*") in r.stdout.lower()
+    except Exception:
+        return False
+
+
+# Process name patterns per agent type used by the background monitor
+_AGENT_PROCESS_PATTERNS: dict[str, str] = {
+    "hermes": "hermes*",
+}
+
+
 def find_hermes_exe() -> str | None:
     """Return the Hermes Electron exe path if found in the standard install location."""
     localappdata = os.environ.get("LOCALAPPDATA", "")

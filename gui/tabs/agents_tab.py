@@ -2,6 +2,8 @@
 from __future__ import annotations
 import json
 import subprocess
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, scrolledtext
 from typing import TYPE_CHECKING, Callable
@@ -22,8 +24,9 @@ class AgentsTab:
         self._state = state
         self._T     = T
         self._log   = log_fn
-        # proc handles indexed by agent name
         self._procs: dict[str, subprocess.Popen | None] = {}
+        self._external_running: set[str] = set()  # names detected via tasklist
+        self._monitor_active = True
 
     def build(self) -> None:
         T   = self._T
@@ -47,6 +50,7 @@ class AgentsTab:
         self._agent_frame.pack(fill="both", expand=True)
 
         self._refresh_list()
+        self._frame.after(0, self._start_monitor)
 
     # ── List rendering ─────────────────────────────────────────────────────────
 
@@ -63,7 +67,7 @@ class AgentsTab:
         name = agent.get("name", "unnamed")
         proc = self._procs.get(name)
 
-        running = agents_core.is_running(proc)
+        running = agents_core.is_running(proc) or name in self._external_running
         pill_bg = T["green"] if running else T["red"]
         pill_tx = "RUNNING" if running else "STOPPED"
 
@@ -104,6 +108,33 @@ class AgentsTab:
                       relief="flat", cursor="hand2", font=("Segoe UI", 9),
                       command=lambda a=agent: self._open_ui(a)
                       ).pack(side="left", padx=2)
+
+    # ── Background monitor ─────────────────────────────────────────────────────
+
+    def _start_monitor(self) -> None:
+        def _poll():
+            while self._monitor_active:
+                new_external: set[str] = set()
+                for agent in self._state.agents:
+                    name        = agent.get("name", "")
+                    agent_type  = agent.get("type", "")
+                    pattern     = agents_core._AGENT_PROCESS_PATTERNS.get(agent_type)
+                    if not pattern:
+                        continue
+                    proc = self._procs.get(name)
+                    if agents_core.is_running(proc):
+                        continue  # already tracked via proc handle
+                    if agents_core.check_running_by_name(pattern):
+                        new_external.add(name)
+                if new_external != self._external_running:
+                    self._external_running = new_external
+                    try:
+                        self._frame.after(0, self._refresh_list)
+                    except Exception:
+                        pass
+                time.sleep(3)
+
+        threading.Thread(target=_poll, daemon=True).start()
 
     # ── Actions ────────────────────────────────────────────────────────────────
 
