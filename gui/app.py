@@ -318,6 +318,7 @@ class LlamaApp:
         self.root._T = self.T   # allows widgets.py _T() to find theme by walking up
         self._apply_ttk_style()
         self._theme_titlebar()
+        self._build_menubar()
 
         if not settings.setup_done or not settings.wsl_user:
             self._run_setup_wizard()
@@ -326,6 +327,46 @@ class LlamaApp:
             self._start_services()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── Menu bar ──────────────────────────────────────────────────────────────
+
+    def _build_menubar(self) -> None:
+        T = self.T
+        menubar = tk.Menu(self.root,
+                          bg=T["bg2"], fg=T["fg"],
+                          activebackground=T["accent"], activeforeground=T["bg"],
+                          relief="flat", bd=0)
+        self.root.config(menu=menubar)
+
+        help_menu = tk.Menu(menubar, tearoff=0,
+                            bg=T["bg2"], fg=T["fg"],
+                            activebackground=T["accent"], activeforeground=T["bg"])
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Quick Reference",
+                              command=self._open_help)
+        help_menu.add_command(label="Re-run Setup Wizard",
+                              command=self._rerun_setup_wizard)
+        help_menu.add_separator()
+        help_menu.add_command(label="About", command=self._show_about)
+
+    def _open_help(self) -> None:
+        from gui.help_window import HelpWindow
+        HelpWindow(self.root, self.T)
+
+    def _rerun_setup_wizard(self) -> None:
+        self._run_setup_wizard()
+
+    def _show_about(self) -> None:
+        from tkinter import messagebox
+        messagebox.showinfo(
+            "About llama-gui",
+            "llama-gui v2\n\n"
+            "A GUI manager for llama.cpp running in WSL2.\n"
+            "Supports model download, server control,\n"
+            "inline chat, and Hermes Agent integration.\n\n"
+            "github.com/your-repo-here",
+            parent=self.root,
+        )
 
     # ── Setup wizard ──────────────────────────────────────────────────────────
 
