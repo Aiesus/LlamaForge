@@ -300,7 +300,7 @@ class LlamaApp:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("llama-gui")
+        self.root.title("LlamaForge")
         self.root.minsize(1000, 640)
 
         settings = load_settings()
@@ -359,12 +359,12 @@ class LlamaApp:
     def _show_about(self) -> None:
         from tkinter import messagebox
         messagebox.showinfo(
-            "About llama-gui",
-            "llama-gui v2\n\n"
+            "About LlamaForge",
+            "LlamaForge v2\n\n"
             "A GUI manager for llama.cpp running in WSL2.\n"
             "Supports model download, server control,\n"
             "inline chat, and Hermes Agent integration.\n\n"
-            "github.com/your-repo-here",
+            "github.com/dbent/llama-forge",
             parent=self.root,
         )
 

@@ -1,8 +1,8 @@
-# llama-gui User Manual
+# LlamaForge — User Manual
 
-## What Is llama-gui?
+## What Is LlamaForge?
 
-llama-gui lets you download, manage, and run AI language models on your own PC — no internet connection required once models are downloaded, no API costs, no data sent to anyone. You talk to the AI through a built-in chat window, or connect any compatible AI tool (like Hermes Agent) to it.
+LlamaForge lets you download, manage, and run AI language models on your own PC — no internet connection required once models are downloaded, no API costs, no data sent to anyone. You talk to the AI through a built-in chat window, or connect any compatible AI tool (like Hermes Agent) to it.
 
 It runs models using **llama.cpp**, a fast open-source AI inference engine, inside Windows Subsystem for Linux (WSL2) on your PC.
 
@@ -19,16 +19,16 @@ It runs models using **llama.cpp**, a fast open-source AI inference engine, insi
 | WSL2 | Required | Required |
 | NVIDIA drivers | 525+ | Latest |
 
-> **What is WSL2?** It's a lightweight Linux environment built into Windows. llama-gui uses it to run llama.cpp, which performs better on Linux. You don't need to know Linux to use it — the setup wizard handles everything.
+> **What is WSL2?** It's a lightweight Linux environment built into Windows. LlamaForge uses it to run llama.cpp, which performs better on Linux. You don't need to know Linux to use it — the setup wizard handles everything.
 
 ---
 
 ## First-Time Setup
 
-When you launch llama-gui for the first time, the Setup Wizard opens automatically.
+When you launch LlamaForge for the first time, the Setup Wizard opens automatically.
 
 ### Step 1 — WSL Distro
-Select your WSL2 Linux distribution from the dropdown (usually **Ubuntu**). If the list is empty, open a terminal and run `wsl --install`, then restart and relaunch llama-gui.
+Select your WSL2 Linux distribution from the dropdown (usually **Ubuntu**). If the list is empty, open a terminal and run `wsl --install`, then restart and relaunch LlamaForge.
 
 ### Step 2 — WSL Username
 Enter your WSL username. This is the username you chose when you first set up WSL. If you don't know it, open a WSL terminal and it will be shown in the prompt (e.g. `dbent@hostname`).
@@ -48,7 +48,7 @@ Click **Finish**. The wizard saves your settings and the main interface opens.
 
 ## The Main Interface
 
-llama-gui has three columns:
+LlamaForge has three columns:
 
 ```
 ┌─────────────────┬────────────────────────┬──────────────────┐
@@ -182,7 +182,7 @@ Hermes Agent is an AI assistant that connects to your local model and can use to
 Click **Start** on the Hermes row. The status pill changes to `RUNNING`. The CLI backend starts, and after ~2 seconds the Hermes desktop window opens.
 
 ### How Auto-Sync Works
-Every time you load a model, llama-gui automatically updates Hermes's `config.yaml` with:
+Every time you load a model, LlamaForge automatically updates Hermes's `config.yaml` with:
 - The current model name
 - `base_url: http://localhost:8088/v1` (the proxy)
 - `provider: custom`
@@ -222,7 +222,7 @@ Runs **llama-bench** to benchmark your hardware with the current model settings.
 
 ## Remote Access
 
-You can connect to your llama-gui server from other devices on your network using **Tailscale**.
+You can connect to your LlamaForge server from other devices on your network using **Tailscale**.
 
 1. Install Tailscale in WSL2: `curl -fsSL https://tailscale.com/install.sh | sh`
 2. Authenticate: `sudo tailscale up`
