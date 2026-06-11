@@ -1,10 +1,11 @@
 """Model tab — ngl, ctx, batch, KV cache types, mlock, moe, flash-attn."""
 from __future__ import annotations
+import re
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
-from gui.widgets import (ToolTip, section, sep, spinbox, combo,
+from gui.widgets import (ToolTip, DynamicToolTip, section, sep, spinbox, combo,
                          cbk, flag_row, grid_frame)
 
 LogFn = Callable[[str, str | None], None]
@@ -13,14 +14,20 @@ KV_TYPES_OFFICIAL = ["f16","bf16","q8_0","q5_1","q5_0","q4_1","q4_0","iq4_nl","f
 KV_TYPES_TURBO    = ["turbo4","turbo3","turbo2"] + KV_TYPES_OFFICIAL
 CTX_VALUES = ["512","1024","2048","4096","8192","16384","32768","65536","131072","262144"]
 
+_TC_QUANT_RE = re.compile(
+    r'(?:[-_.])(IQ[1-5]_[A-Za-z0-9_]+|Q[2-9]_[A-Za-z0-9_]+|BF16|F16|F32)(?=[-_.]|$)',
+    re.IGNORECASE,
+)
+
 
 class ModelTab:
 
     def __init__(self, frame: tk.Frame, state, T: dict, log_fn: LogFn):
-        self._frame = frame
-        self._state = state
-        self._T     = T
-        self._log   = log_fn
+        self._frame   = frame
+        self._state   = state
+        self._T       = T
+        self._log     = log_fn
+        self._tc_auto = False   # True = current tokenizer path was auto-detected
 
     def build(self) -> None:
         T  = self._T
@@ -103,6 +110,51 @@ class ModelTab:
             "Skip startup inference pass. Server ready faster; first request slightly slower.")
 
         sep(sf, T)
+        section(sf, "TOKENIZER CONFIG", T)
+        tc_outer = tk.Frame(sf, bg=sf.cget("bg"))
+        tc_outer.pack(fill="x", padx=12, pady=4)
+
+        tc_row = tk.Frame(tc_outer, bg=tc_outer.cget("bg"))
+        tc_row.pack(fill="x", anchor="w")
+
+        tc_cb = tk.Checkbutton(
+            tc_row, text="--chat-template-file",
+            variable=self._state.tokenizer_config_en_var,
+            bg=tc_row.cget("bg"), fg=T["fg"],
+            activebackground=tc_row.cget("bg"), activeforeground=T["accent"],
+            selectcolor=T["bg3"], relief="flat",
+            font=("Consolas", 9), cursor="hand2",
+        )
+        tc_cb.pack(side="left")
+        ToolTip(tc_cb,
+            "Load Jinja2 chat template from an external .jinja file.\n"
+            "Essential when the GGUF has no embedded template (common in quantized releases).\n"
+            "Hover the indicator dot for the active file path.")
+
+        self._tc_indicator = tk.Label(
+            tc_row, text="· not set",
+            bg=tc_row.cget("bg"), fg=T["fg2"],
+            font=("Consolas", 9), cursor="hand2",
+        )
+        self._tc_indicator.pack(side="left", padx=(12, 0))
+        DynamicToolTip(self._tc_indicator,
+            lambda: self._state.tokenizer_config_var.get() or "No tokenizer config file set")
+
+        self._tc_entry = tk.Entry(
+            tc_outer, textvariable=self._state.tokenizer_config_var,
+            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
+            font=("Consolas", 9), insertbackground=T["fg"],
+        )
+        self._tc_entry.pack(fill="x", pady=(4, 0))
+        self._tc_entry.bind("<FocusIn>", lambda e: setattr(self, "_tc_auto", False))
+
+        self._state.tokenizer_config_en_var.trace_add("write", lambda *_: self._on_tc_change())
+        self._state.tokenizer_config_var.trace_add("write",    lambda *_: self._on_tc_change())
+        self._state.model_var.trace_add("write", lambda *_: self._auto_detect_tokenizer())
+        self._on_tc_change()
+        self._auto_detect_tokenizer()
+
+        sep(sf, T)
         section(sf, "MULTI-GPU", T)
         g2 = grid_frame(sf)
 
@@ -116,15 +168,122 @@ class ModelTab:
                            activebackground=g2.cget("bg"), activeforeground=T["accent"],
                            font=("Segoe UI", 9), cursor="hand2").pack(side="left", padx=4)
 
-        tk.Label(g2, text="Tensor split (--tensor-split)", bg=g2.cget("bg"), fg=T["fg2"],
-                 font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", padx=(0,8), pady=2)
-        tsf = tk.Frame(g2, bg=g2.cget("bg"))
-        tsf.grid(row=1, column=1, sticky="ew", pady=2)
-        tk.Entry(tsf, textvariable=self._state.tensor_split_var, width=12,
-                 bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
-                 font=("Consolas", 10), insertbackground=T["fg"]).pack(side="left")
-        tk.Label(tsf, text='e.g. "2,3" = 40/60%', bg=g2.cget("bg"),
-                 fg=T["fg2"], font=("Segoe UI", 8)).pack(side="left", padx=6)
+        # Tensor split — percentage slider spanning both columns
+        split_outer = tk.Frame(g2, bg=g2.cget("bg"))
+        split_outer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 2))
+
+        en_cb = tk.Checkbutton(split_outer, text="--tensor-split",
+                               variable=self._state.tensor_split_en_var,
+                               bg=split_outer.cget("bg"), fg=T["fg"],
+                               activebackground=split_outer.cget("bg"),
+                               activeforeground=T["accent"],
+                               selectcolor=T["bg3"], relief="flat",
+                               font=("Consolas", 9), cursor="hand2")
+        en_cb.pack(side="left")
+        ToolTip(en_cb, "Enable multi-GPU tensor split. Distributes model layers across GPUs.")
+
+        bg = split_outer.cget("bg")
+        self._ts_lbl0 = tk.Label(split_outer, text="GPU 0: 60%",
+                                 bg=bg, fg=T["accent"], font=("Consolas", 9), width=10, anchor="e")
+        self._ts_lbl0.pack(side="left", padx=(10, 2))
+
+        self._ts_slider = tk.Scale(
+            split_outer, from_=5, to=95, resolution=5, orient="horizontal",
+            variable=self._state.tensor_split_pct_var,
+            bg=bg, fg=T["fg"], troughcolor=T["bar_bg"],
+            highlightthickness=0, activebackground=T["accent"],
+            length=160, showvalue=False,
+        )
+        self._ts_slider.pack(side="left", padx=2)
+        ToolTip(self._ts_slider,
+                "Proportion of model offloaded to each GPU.\n"
+                "GPU 0 gets X%, GPU 1 gets (100−X)%.\n"
+                "With CUDA swap on, GPU 0 here = CUDA device 0 (RTX 3060 12GB).")
+
+        self._ts_lbl1 = tk.Label(split_outer, text="GPU 1: 40%",
+                                 bg=bg, fg=T["accent"], font=("Consolas", 9), width=10, anchor="w")
+        self._ts_lbl1.pack(side="left", padx=(2, 0))
+
+        def _on_pct(*_):
+            pct = self._state.tensor_split_pct_var.get()
+            self._ts_lbl0.config(text=f"GPU 0: {pct}%")
+            self._ts_lbl1.config(text=f"GPU 1: {100-pct}%")
+            if self._state.tensor_split_en_var.get():
+                self._state.tensor_split_var.set(f"{pct},{100-pct}")
+
+        def _on_enable(*_):
+            enabled = self._state.tensor_split_en_var.get()
+            self._ts_slider.config(state="normal" if enabled else "disabled")
+            if enabled:
+                pct = self._state.tensor_split_pct_var.get()
+                self._state.tensor_split_var.set(f"{pct},{100-pct}")
+            else:
+                self._state.tensor_split_var.set("")
+
+        self._state.tensor_split_pct_var.trace_add("write", _on_pct)
+        self._state.tensor_split_en_var.trace_add("write", _on_enable)
+        _on_pct()
+        _on_enable()
+
+    def _auto_detect_tokenizer(self) -> None:
+        model = self._state.model_var.get()
+        if not model or not model.lower().endswith(".gguf"):
+            return
+        s   = self._state.settings
+        unc = s.models_unc
+        if not unc:
+            return
+        from pathlib import Path
+        stem = model[:-5]
+        quant_pos = len(stem)
+        for m in _TC_QUANT_RE.finditer(stem):
+            quant_pos = m.start()
+        clean = stem[:quant_pos].rstrip("-_.")
+        found_wsl = None
+        candidates = [
+            f"{stem}-chat-template.jinja",
+            f"{clean}-chat-template.jinja",
+            f"{stem}-tokenizer_config.json",
+            f"{clean}-tokenizer_config.json",
+        ]
+        for name in candidates:
+            try:
+                if (Path(unc) / name).exists():
+                    found_wsl = f"{s.models_wsl}/{name}"
+                    break
+            except Exception:
+                pass
+        if found_wsl:
+            self._tc_auto = True
+            self._state.tokenizer_config_var.set(found_wsl)
+            self._state.tokenizer_config_en_var.set(True)
+        elif self._tc_auto:
+            self._tc_auto = False
+            self._state.tokenizer_config_var.set("")
+            self._state.tokenizer_config_en_var.set(False)
+        self._update_tc_indicator()
+
+    def _on_tc_change(self) -> None:
+        en = self._state.tokenizer_config_en_var.get()
+        try:
+            self._tc_entry.config(state="normal" if en else "disabled")
+        except Exception:
+            pass
+        self._update_tc_indicator()
+
+    def _update_tc_indicator(self) -> None:
+        T    = self._T
+        en   = self._state.tokenizer_config_en_var.get()
+        path = self._state.tokenizer_config_var.get().strip()
+        try:
+            if not en or not path:
+                self._tc_indicator.config(text="· not set", fg=T["fg2"])
+            elif self._tc_auto:
+                self._tc_indicator.config(text="● auto", fg=T["green"])
+            else:
+                self._tc_indicator.config(text="● set",  fg=T["accent"])
+        except Exception:
+            pass
 
     def _on_bin_change(self) -> None:
         """Swap KV cache type lists based on whether TurboQuant binary is selected."""
@@ -146,7 +305,7 @@ class ModelTab:
     def _scrollable_frame(self) -> tk.Frame:
         T      = self._T
         canvas = tk.Canvas(self._frame, bg=T["bg2"], highlightthickness=0)
-        vsb    = tk.Scrollbar(self._frame, orient="vertical", command=canvas.yview)
+        vsb    = ttk.Scrollbar(self._frame, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)

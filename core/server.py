@@ -37,12 +37,18 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
     if not model:
         return ""
 
-    mlock_prefix = "sudo prlimit --memlock=unlimited:unlimited " if p.get("mlock") else ""
-    cuda_prefix  = "CUDA_VISIBLE_DEVICES=1,0 " if s.cuda_swap else ""
+    if p.get("mlock") and s.cuda_swap:
+        launch_prefix = "sudo prlimit --memlock=unlimited:unlimited env CUDA_VISIBLE_DEVICES=1,0 "
+    elif p.get("mlock"):
+        launch_prefix = "sudo prlimit --memlock=unlimited:unlimited "
+    elif s.cuda_swap:
+        launch_prefix = "CUDA_VISIBLE_DEVICES=1,0 "
+    else:
+        launch_prefix = ""
     alias = p.get("alias", "").strip() or (model[:-5] if model.lower().endswith(".gguf") else model)
 
     parts = [
-        f"cd {s.llama_root} && {mlock_prefix}{cuda_prefix}{llama_bin}",
+        f"cd {s.llama_root} && {launch_prefix}{llama_bin}",
         f"-m {s.models_wsl}/{model}",
         f"--alias {alias}",
         f"-ngl {p.get('ngl', 60)}",
@@ -153,6 +159,9 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
         parts.append("--no-display-prompt")
     if p.get("jinja"):
         parts.append("--jinja")
+    tc = p.get("tokenizer_config", "").strip()
+    if tc:
+        parts.append(f"--chat-template-file {tc}")
     if p.get("no_warmup"):
         parts.append("--no-warmup")
 

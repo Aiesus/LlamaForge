@@ -1,16 +1,12 @@
 """
-Header bar — server status, GPU/RAM/CPU bars, tokens/sec, action buttons.
+Header bar — server status, GPU/RAM/CPU bars, tokens/sec.
 """
 from __future__ import annotations
-import webbrowser
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 from typing import Callable
 
 from core.monitor  import MonitorSnapshot
-from core.server   import run_diagnostics
-from core.wsl      import restart_proxy
-from gui.themes    import THEME_LABELS, get as get_theme
 
 LogFn = Callable[[str, str | None], None]
 
@@ -49,9 +45,10 @@ class Header:
         self._tps_label.pack(side="left", padx=(0, 12))
 
         # ── GPU bars ──────────────────────────────────────────────────────────
-        self._gpu_vram_bars:    list[dict] = []
-        self._gpu_compute_bars: list[dict] = []
-        self._gpu_temp_labels:  list[tk.Label] = []
+        self._gpu_vram_bars:       list[dict]     = []
+        self._gpu_compute_bars:    list[dict]     = []
+        self._gpu_temp_labels:     list[tk.Label] = []
+        self._gpu_temp_hdr_labels: list[tk.Label] = []
 
         for i in range(2):
             vram_bar = self._make_bar(self._frame, f"GPU {i} VRAM", T["bar_fg"])
@@ -65,8 +62,10 @@ class Header:
 
             temp_outer = tk.Frame(self._frame, bg=T["bg2"])
             temp_outer.pack(side="left", padx=(0, 8))
-            tk.Label(temp_outer, text=f"GPU {i} Temp", bg=T["bg2"], fg=T["fg2"],
-                     font=("Consolas", 9)).pack(anchor="w")
+            temp_hdr = tk.Label(temp_outer, text=f"GPU {i} Temp", bg=T["bg2"], fg=T["fg2"],
+                                font=("Consolas", 9))
+            temp_hdr.pack(anchor="w")
+            self._gpu_temp_hdr_labels.append(temp_hdr)
             temp_lbl = tk.Label(temp_outer, text="—°C",
                                 bg=T["bg2"], fg=T["fg2"], font=("Consolas", 10, "bold"))
             temp_lbl.pack(anchor="w")
@@ -93,33 +92,6 @@ class Header:
         cpu_bar["text"].config(text="— %")
         self._cpu_bar = cpu_bar
 
-        # ── Right-side buttons ────────────────────────────────────────────────
-        tk.Button(
-            self._frame, text="Theme",
-            bg=T["btn"], fg=T["btn_fg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9), command=self._open_theme_picker
-        ).pack(side="right", padx=4)
-
-        tk.Button(
-            self._frame, text="🌐 llama UI",
-            bg=T["accent"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9, "bold"),
-            command=lambda: webbrowser.open(
-                f"http://localhost:{self._state.port_var.get()}"
-            )
-        ).pack(side="right", padx=4)
-
-        tk.Button(
-            self._frame, text="Restart Proxy",
-            bg=T["btn"], fg=T["btn_fg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9), command=self._restart_proxy
-        ).pack(side="right", padx=4)
-
-        tk.Button(
-            self._frame, text="Diagnose",
-            bg=T["yellow"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9, "bold"), command=self._diagnose
-        ).pack(side="right", padx=4)
 
     # ── Update methods (called from main thread via _safe_after) ──────────────
 
@@ -151,22 +123,29 @@ class Header:
     def update_stats(self, snap: MonitorSnapshot) -> None:
         T = self._T
         try:
-            for i, gpu in enumerate(snap.gpus):
-                if i >= len(self._gpu_vram_bars):
-                    break
-                self._update_bar(self._gpu_vram_bars[i],
-                                 gpu.used_mb, gpu.total_mb, gpu.pct, "MiB")
-                self._update_bar(self._gpu_compute_bars[i],
-                                 gpu.util_pct, 100, gpu.util_pct / 100, "%")
-                temp_lbl = self._gpu_temp_labels[i]
-                temp_lbl.config(text=f"{gpu.temp_c}°C",
-                                fg=self._temp_color(gpu.temp_c))
+            swap = self._state.cuda_swap_var.get()
+            # When swapped, display slot 0 = CUDA device 0 = physical GPU 1 (and vice versa)
+            phys_order = [1, 0] if swap else [0, 1]
+            prefix     = "CUDA" if swap else "GPU"
 
-            # Mark undetected GPUs
-            for i in range(len(snap.gpus), len(self._gpu_vram_bars)):
-                self._gpu_vram_bars[i]["text"].config(text="not detected")
-                self._gpu_compute_bars[i]["text"].config(text="not detected")
-                self._gpu_temp_labels[i].config(text="—°C")
+            for slot in range(len(self._gpu_vram_bars)):
+                phys = phys_order[slot] if slot < len(phys_order) else slot
+                self._gpu_vram_bars[slot]["label"].config(text=f"{prefix} {slot} VRAM")
+                self._gpu_compute_bars[slot]["label"].config(text=f"{prefix} {slot} Load")
+                self._gpu_temp_hdr_labels[slot].config(text=f"{prefix} {slot} Temp")
+
+                if phys < len(snap.gpus):
+                    gpu = snap.gpus[phys]
+                    self._update_bar(self._gpu_vram_bars[slot],
+                                     gpu.used_mb, gpu.total_mb, gpu.pct, "MiB")
+                    self._update_bar(self._gpu_compute_bars[slot],
+                                     gpu.util_pct, 100, gpu.util_pct / 100, "%")
+                    self._gpu_temp_labels[slot].config(text=f"{gpu.temp_c}°C",
+                                                       fg=self._temp_color(gpu.temp_c))
+                else:
+                    self._gpu_vram_bars[slot]["text"].config(text="not detected")
+                    self._gpu_compute_bars[slot]["text"].config(text="not detected")
+                    self._gpu_temp_labels[slot].config(text="—°C")
 
             # WSL RAM
             if snap.wsl_total_gb:
@@ -194,8 +173,8 @@ class Header:
     def _make_bar(self, parent: tk.Widget, label: str, color: str) -> dict:
         T = self._T
         outer = tk.Frame(parent, bg=T["bg2"])
-        tk.Label(outer, text=label, bg=T["bg2"], fg=T["fg2"],
-                 font=("Consolas", 9)).pack(anchor="w")
+        hdr = tk.Label(outer, text=label, bg=T["bg2"], fg=T["fg2"], font=("Consolas", 9))
+        hdr.pack(anchor="w")
         bar_bg = tk.Frame(outer, bg=T["bar_bg"], width=140, height=14)
         bar_bg.pack_propagate(False)
         bar_bg.pack()
@@ -205,7 +184,7 @@ class Header:
                             font=("Consolas", 9))
         text_lbl.pack()
         return {"outer": outer, "bg": bar_bg, "fill": bar_fill,
-                "text": text_lbl, "default_color": color}
+                "text": text_lbl, "default_color": color, "label": hdr}
 
     def _update_bar(self, bar: dict, used, total, pct: float, unit: str) -> None:
         try:
@@ -234,58 +213,3 @@ class Header:
         if temp >= 50: return T["yellow"]
         return T["green"]
 
-    # ── Button actions ────────────────────────────────────────────────────────
-
-    def _restart_proxy(self) -> None:
-        s = self._state.settings
-        restart_proxy(s.wsl_distro, s.wsl_user, self._log)
-
-    def _diagnose(self) -> None:
-        s = self._state.settings
-        run_diagnostics(
-            s.wsl_distro, s.wsl_user,
-            self._state.port_var.get(),
-            self._log,
-        )
-
-    def _open_theme_picker(self) -> None:
-        T = self._T
-        win = tk.Toplevel(self._root)
-        win.title("Choose Theme")
-        win.geometry("320x260")
-        win.configure(bg=T["bg"])
-        win.resizable(False, False)
-
-        tk.Label(win, text="Select theme:", bg=T["bg"], fg=T["fg"],
-                 font=("Segoe UI", 10)).pack(pady=(16, 8))
-
-        var = tk.StringVar(value=self._state.settings.theme)
-        for key, label in THEME_LABELS.items():
-            tk.Radiobutton(
-                win, text=label, variable=var, value=key,
-                bg=T["bg"], fg=T["fg"], selectcolor=T["bg3"],
-                activebackground=T["bg"], activeforeground=T["accent"],
-                font=("Segoe UI", 9), cursor="hand2"
-            ).pack(anchor="w", padx=24, pady=2)
-
-        def _apply():
-            chosen = var.get()
-            self._state.settings.theme = chosen
-            from core.settings import save_settings
-            save_settings(self._state.settings)
-            messagebox.showinfo(
-                "Theme saved",
-                f"Theme set to '{THEME_LABELS[chosen]}'.\n"
-                "Restart the app to apply.",
-                parent=win
-            )
-            win.destroy()
-
-        btn_row = tk.Frame(win, bg=T["bg"])
-        btn_row.pack(pady=12)
-        tk.Button(btn_row, text="Apply", bg=T["green"], fg=T["bg"],
-                  relief="flat", font=("Segoe UI", 10, "bold"), cursor="hand2",
-                  command=_apply).pack(side="left", padx=6)
-        tk.Button(btn_row, text="Cancel", bg=T["btn"], fg=T["btn_fg"],
-                  relief="flat", font=("Segoe UI", 10), cursor="hand2",
-                  command=win.destroy).pack(side="left")

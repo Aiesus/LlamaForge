@@ -7,7 +7,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk
 from pathlib import Path
 from typing import Callable
 
@@ -23,6 +23,19 @@ from core.server   import ServerController, HealthChecker, ServerState, build_co
 from gui.themes    import get as get_theme, THEME_LABELS, DEFAULT_THEME
 
 LogFn = Callable[[str, str | None], None]
+
+
+def _ts_to_pct(ts: str) -> int:
+    """Parse any --tensor-split value (e.g. '3,2' or '60,40') → GPU 0 integer %."""
+    parts = [p.strip() for p in ts.replace(";", ",").split(",") if p.strip()]
+    if len(parts) >= 2:
+        try:
+            v0, v1 = float(parts[0]), float(parts[1])
+            if v0 + v1 > 0:
+                return max(5, min(95, round(v0 / (v0 + v1) * 100)))
+        except ValueError:
+            pass
+    return 60
 
 
 # ── AppState ──────────────────────────────────────────────────────────────────
@@ -79,7 +92,11 @@ class AppState:
         self.n_cpu_moe_en_var       = tk.BooleanVar(value=DEFAULT_PROFILE["n_cpu_moe"])
         self.n_cpu_moe_var          = tk.StringVar(value=str(DEFAULT_PROFILE["n_cpu_moe_n"]))
         self.no_warmup_var          = tk.BooleanVar(value=DEFAULT_PROFILE["no_warmup"])
+        self.tokenizer_config_en_var = tk.BooleanVar(value=False)
+        self.tokenizer_config_var    = tk.StringVar(value="")
         self.tensor_split_var       = tk.StringVar(value=DEFAULT_PROFILE["tensor_split"])
+        self.tensor_split_pct_var   = tk.IntVar(value=60)   # GPU 0 share 0-100
+        self.tensor_split_en_var    = tk.BooleanVar(value=False)
         self.main_gpu_var           = tk.IntVar(value=DEFAULT_PROFILE["main_gpu"])
         self.no_display_prompt_var  = tk.BooleanVar(value=DEFAULT_PROFILE["no_display_prompt"])
         self.jinja_var              = tk.BooleanVar(value=DEFAULT_PROFILE["jinja"])
@@ -171,6 +188,7 @@ class AppState:
             "n_cpu_moe":            self.n_cpu_moe_en_var.get(),
             "n_cpu_moe_n":          self.n_cpu_moe_var.get(),
             "no_warmup":            self.no_warmup_var.get(),
+            "tokenizer_config":     self.tokenizer_config_var.get() if self.tokenizer_config_en_var.get() else "",
             "no_display_prompt":    self.no_display_prompt_var.get(),
             "jinja":                self.jinja_var.get(),
             "tensor_split":         self.tensor_split_var.get(),
@@ -236,9 +254,19 @@ class AppState:
         self.n_cpu_moe_en_var.set(p.get("n_cpu_moe", False))
         self.n_cpu_moe_var.set(str(p.get("n_cpu_moe_n", "4")))
         self.no_warmup_var.set(p.get("no_warmup", False))
+        tc = p.get("tokenizer_config", "")
+        self.tokenizer_config_en_var.set(bool(tc.strip()))
+        self.tokenizer_config_var.set(tc)
         self.no_display_prompt_var.set(p.get("no_display_prompt", False))
         self.jinja_var.set(p.get("jinja", False))
-        self.tensor_split_var.set(p.get("tensor_split", ""))
+        ts = p.get("tensor_split", "")
+        # Update pct_var BEFORE en_var so the trace-on-enable sees the correct pct
+        self.tensor_split_en_var.set(False)
+        if ts.strip():
+            self.tensor_split_pct_var.set(_ts_to_pct(ts))
+            self.tensor_split_en_var.set(True)
+        else:
+            self.tensor_split_var.set("")
         self.main_gpu_var.set(p.get("main_gpu", 0))
         self.extra_flags_var.set(p.get("extra_flags", ""))
         self.alias_var.set(p.get("alias", ""))
@@ -287,6 +315,7 @@ class LlamaApp:
         self.T = get_theme(settings.theme)
         self.root._T = self.T   # allows widgets.py _T() to find theme by walking up
         self._apply_ttk_style()
+        self._theme_titlebar()
 
         if not settings.setup_done or not settings.wsl_user:
             self._run_setup_wizard()
@@ -313,26 +342,62 @@ class LlamaApp:
     def _build_main_ui(self):
         self.root.configure(bg=self.T["bg"])
 
-        from gui.header     import Header
-        from gui.left_panel import LeftPanel
+        from gui.header import Header
+        self.header = Header(self.root, self.state, self.T, log_fn=self._log)
 
-        self.header     = Header(self.root, self.state, self.T, log_fn=self._log)
-        self.left_panel = LeftPanel(self.root, self.state, self.T, log_fn=self._log)
-
-        self.main_frame = tk.Frame(self.root, bg=self.T["bg"])
+        T = self.T
+        self.main_frame = tk.Frame(self.root, bg=T["bg"])
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self.main_frame.columnconfigure(1, weight=1)
-        self.main_frame.columnconfigure(2, weight=2)
-        self.main_frame.rowconfigure(0, weight=1)
 
-        self.left_panel.build(self.main_frame)
+        self._paned = tk.PanedWindow(
+            self.main_frame, orient="horizontal",
+            bg=T["bg3"], sashwidth=5, sashpad=1,
+            sashrelief="flat", showhandle=False,
+            relief="flat", bd=0,
+        )
+        self._paned.pack(fill="both", expand=True)
+
+        self._saved_log_width: int | None = None
+        self._build_left_pane()
         self._build_center_tabs()
         self._build_log_panel()
+        self._build_log_stub()
+
+        # Restore saved sash positions.  Poll until the PanedWindow has been
+        # given a real width by Tkinter (winfo_width > 1), which means it is
+        # mapped and the geometry manager has finished its first layout pass.
+        # Setting sashpos before that moment is silently ignored.
+        s = self.state.settings
+        _tries = [0]
+        def _restore():
+            _tries[0] += 1
+            if _tries[0] > 60:          # give up after ~3 s
+                return
+            if self._paned.winfo_width() <= 1:
+                self.root.after(50, _restore)
+                return
+            try:
+                if s.pane_sash0 > 0:
+                    self._paned.sashpos(0, s.pane_sash0)
+                # Defer sash 1 one idle cycle so sash 0's layout change settles first
+                if s.pane_sash1 > 0:
+                    self.root.after_idle(lambda: self._paned.sashpos(1, s.pane_sash1))
+            except Exception:
+                pass
+        self.root.after(50, _restore)
+
+    def _build_left_pane(self):
+        from gui.left_panel import LeftPanel
+        T = self.T
+        left = tk.Frame(self._paned, bg=T["bg2"])
+        self._paned.add(left, minsize=300, width=460)
+        self.left_panel = LeftPanel(self.root, self.state, self.T, log_fn=self._log)
+        self.left_panel.build(left)
 
     def _build_center_tabs(self):
         T = self.T
-        center = tk.Frame(self.main_frame, bg=T["bg2"])
-        center.grid(row=0, column=1, sticky="nsew", padx=5)
+        center = tk.Frame(self._paned, bg=T["bg2"])
+        self._paned.add(center, minsize=350)
 
         style = ttk.Style()
         style.configure("App.TNotebook",
@@ -359,7 +424,7 @@ class LlamaApp:
 
         tabs = [
             ("Server",    ServerTab),
-            ("Model",     ModelTab),
+            ("Load",      ModelTab),
             ("Sampling",  SamplingTab),
             ("Advanced",  AdvancedTab),
             ("Agents",    AgentsTab),
@@ -372,8 +437,8 @@ class LlamaApp:
 
     def _build_log_panel(self):
         T = self.T
-        self.right = tk.Frame(self.main_frame, bg=T["bg2"])
-        self.right.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
+        self.right = tk.Frame(self._paned, bg=T["bg2"])
+        self._paned.add(self.right, minsize=180, width=400)
 
         hrow = tk.Frame(self.right, bg=T["bg2"])
         hrow.pack(fill="x")
@@ -381,6 +446,12 @@ class LlamaApp:
 
         ctrl = tk.Frame(hrow, bg=T["bg2"])
         ctrl.pack(side="right", padx=8)
+
+        tk.Button(
+            ctrl, text="◀ Hide", bg=T["btn"], fg=T["btn_fg"],
+            relief="flat", cursor="hand2", font=("Segoe UI", 8),
+            command=self._toggle_log,
+        ).pack(side="left", padx=2)
 
         self._pause_btn = tk.Button(
             ctrl, text="⏸ Pause", bg=T["btn"], fg=T["btn_fg"],
@@ -393,24 +464,34 @@ class LlamaApp:
                   relief="flat", cursor="hand2", font=("Segoe UI", 8),
                   command=self._clear_log).pack(side="left", padx=2)
 
-        self._log_toggle_btn = tk.Button(
-            ctrl, text="Hide", bg=T["btn"], fg=T["btn_fg"],
-            relief="flat", cursor="hand2", font=("Segoe UI", 8),
-            command=self._toggle_log
-        )
-        self._log_toggle_btn.pack(side="left", padx=2)
-
-        self.log_box = scrolledtext.ScrolledText(
-            self.right, bg=T["log_bg"], fg=T["log_fg"],
+        _log_wrap = tk.Frame(self.right, bg=T["log_bg"])
+        _log_wrap.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        _log_vsb = ttk.Scrollbar(_log_wrap, orient="vertical")
+        _log_vsb.pack(side="right", fill="y")
+        self.log_box = tk.Text(
+            _log_wrap, bg=T["log_bg"], fg=T["log_fg"],
             font=("Consolas", 9), relief="flat", wrap="word",
-            state="disabled", padx=8, pady=6
+            state="disabled", padx=8, pady=6,
+            yscrollcommand=_log_vsb.set,
         )
-        self.log_box.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.log_box.pack(side="left", fill="both", expand=True)
+        _log_vsb.config(command=self.log_box.yview)
         self.log_box.tag_config("error",   foreground=T["red"])
         self.log_box.tag_config("success", foreground=T["green"])
         self.log_box.tag_config("warn",    foreground=T["orange"])
         self.log_box.tag_config("info",    foreground=T["accent"])
         self.log_box.tag_config("hermes",  foreground=T["yellow"])
+
+    def _build_log_stub(self):
+        T = self.T
+        self._log_stub = tk.Frame(self._paned, bg=T["bg2"], width=24)
+        tk.Button(
+            self._log_stub, text="▶",
+            bg=T["bg2"], fg=T["fg2"],
+            relief="flat", cursor="hand2",
+            font=("Segoe UI", 9), bd=0,
+            command=self._toggle_log,
+        ).pack(fill="both", expand=True)
 
     # ── Services ──────────────────────────────────────────────────────────────
 
@@ -509,12 +590,16 @@ class LlamaApp:
         self.log_box.config(state="disabled")
 
     def _toggle_log(self):
-        if self.log_box.winfo_ismapped():
-            self.log_box.pack_forget()
-            self._log_toggle_btn.config(text="Show")
+        panes = self._paned.panes()
+        if str(self.right) in panes:
+            self._saved_log_width = self.right.winfo_width()
+            self._paned.forget(self.right)
+            self._paned.add(self._log_stub, minsize=24, width=24)
         else:
-            self.log_box.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-            self._log_toggle_btn.config(text="Hide")
+            if str(self._log_stub) in self._paned.panes():
+                self._paned.forget(self._log_stub)
+            w = self._saved_log_width or 400
+            self._paned.add(self.right, minsize=180, width=w)
 
     def _toggle_scroll_pause(self):
         self.state._scroll_paused = not self.state._scroll_paused
@@ -558,8 +643,40 @@ class LlamaApp:
                   background=[("readonly", T["btn"])])
         style.configure("TScrollbar",
                         background=T["bg3"],
-                        troughcolor=T["bg2"],
-                        arrowcolor=T["fg2"])
+                        troughcolor=T["bg"],
+                        arrowcolor=T["fg2"],
+                        bordercolor=T["bg"],
+                        darkcolor=T["bg3"],
+                        lightcolor=T["bg3"],
+                        relief="flat")
+        style.map("TScrollbar",
+                  background=[("active", T["accent"]), ("pressed", T["accent"])],
+                  arrowcolor=[("active", T["fg"]), ("pressed", T["fg"])])
+        style.configure("Vertical.TScrollbar",   width=12)
+        style.configure("Horizontal.TScrollbar", width=12)
+
+    def _theme_titlebar(self):
+        import sys, ctypes
+        if sys.platform != "win32":
+            return
+        try:
+            self.root.update()  # realize the window so frame() returns a valid HWND
+            def _colorref(h: str) -> int:
+                return int(h[1:3], 16) | (int(h[3:5], 16) << 8) | (int(h[5:7], 16) << 16)
+            T    = self.T
+            # root.frame() returns the hex HWND of the WM frame window (has the title bar)
+            hwnd = int(self.root.frame(), 16)
+            # Force dark caption icons/text (white minimize/restore/close icons)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
+            # Caption background color
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 35, ctypes.byref(ctypes.c_int(_colorref(T["bg2"]))), 4)
+            # Caption text/icon color
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 36, ctypes.byref(ctypes.c_int(_colorref(T["fg"]))), 4)
+        except Exception:
+            pass
 
     def _save_state(self):
         s = self.state.settings
@@ -569,6 +686,12 @@ class LlamaApp:
         s.proxy_bypass = self.state.proxy_bypass_var.get()
         s.wsl_memory   = self.state.wsl_memory_var.get()
         s.cuda_swap    = self.state.cuda_swap_var.get()
+        try:
+            s.pane_sash0 = self._paned.sashpos(0)
+            if str(self.right) in self._paned.panes():
+                s.pane_sash1 = self._paned.sashpos(1)
+        except Exception:
+            pass
         save_settings(s)
         save_profiles(self.state.profiles)
         save_agents(self.state.agents)

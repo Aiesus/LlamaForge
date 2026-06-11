@@ -1,6 +1,7 @@
 """Sampling tab — temp, top-k/p, min-p, penalties, predict, seed, mirostat."""
 from __future__ import annotations
 import tkinter as tk
+from tkinter import ttk
 from typing import Callable
 
 from gui.widgets import section, sep, spinbox, slider_spin, flag_row, grid_frame
@@ -89,7 +90,7 @@ class SamplingTab:
     def _scrollable_frame(self) -> tk.Frame:
         T      = self._T
         canvas = tk.Canvas(self._frame, bg=T["bg2"], highlightthickness=0)
-        vsb    = tk.Scrollbar(self._frame, orient="vertical", command=canvas.yview)
+        vsb    = ttk.Scrollbar(self._frame, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)

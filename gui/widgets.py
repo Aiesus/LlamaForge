@@ -195,6 +195,51 @@ class ToolTip:
             self.tw = None
 
 
+class DynamicToolTip:
+    """Like ToolTip but text is a callable evaluated at show-time (for live values)."""
+    def __init__(self, widget: tk.Widget, text_fn):
+        self.widget  = widget
+        self.text_fn = text_fn
+        self.tw: tk.Toplevel | None = None
+        widget.bind("<Enter>",       self._schedule, add="+")
+        widget.bind("<Leave>",       self._cancel,   add="+")
+        widget.bind("<ButtonPress>", self._cancel,   add="+")
+
+    def _schedule(self, event=None):
+        self._cancel()
+        self._id = self.widget.after(600, self._show)
+
+    def _cancel(self, event=None):
+        try:
+            self.widget.after_cancel(self._id)
+        except Exception:
+            pass
+        self._hide()
+
+    def _show(self):
+        text = self.text_fn()
+        if not text:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tw = tk.Toplevel(self.widget)
+        self.tw.wm_overrideredirect(True)
+        self.tw.wm_geometry(f"+{x}+{y}")
+        self.tw.attributes("-topmost", True)
+        tk.Label(self.tw, text=text, justify="left",
+                 background="#1e2733", foreground="#c8d0da",
+                 relief="flat", font=("Segoe UI", 8),
+                 wraplength=480, padx=8, pady=5).pack()
+
+    def _hide(self):
+        if self.tw:
+            try:
+                self.tw.destroy()
+            except Exception:
+                pass
+            self.tw = None
+
+
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def _T(widget: tk.Widget) -> dict:

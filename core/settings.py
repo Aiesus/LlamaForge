@@ -66,6 +66,7 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "n_cpu_moe":           False,
     "n_cpu_moe_n":         "4",
     "no_warmup":           False,
+    "tokenizer_config":    "",
     "flag_prio":           False,
     "flag_prio_level":     "2",
     "flag_prio_batch":     False,
@@ -140,6 +141,10 @@ class AppSettings:
     # Swap CUDA device order: sets CUDA_VISIBLE_DEVICES=1,0 before llama-server.
     # Useful when GPU 1 is larger and should be the primary compute device.
     cuda_swap:      bool = False
+
+    # Saved PanedWindow sash positions (pixels from left edge)
+    pane_sash0:     int  = 460   # between left panel and center tabs
+    pane_sash1:     int  = 940   # between center tabs and log
 
     # Setup completed flag
     setup_done:     bool = False

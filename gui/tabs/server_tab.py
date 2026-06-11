@@ -102,7 +102,7 @@ class ServerTab:
     def _scrollable_frame(self) -> tk.Frame:
         T = self._T
         canvas = tk.Canvas(self._frame, bg=T["bg2"], highlightthickness=0)
-        vsb    = tk.Scrollbar(self._frame, orient="vertical", command=canvas.yview)
+        vsb    = ttk.Scrollbar(self._frame, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
