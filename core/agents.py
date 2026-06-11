@@ -126,24 +126,61 @@ def _start_hermes(agent: dict, exe: str, log_fn: LogFn) -> subprocess.Popen | No
 
 # ── Hermes sync ───────────────────────────────────────────────────────────────
 
+def _hermes_config_path(agent: dict) -> str:
+    cfg = agent.get("config", "").strip()
+    if not cfg:
+        cfg = str(Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "config.yaml")
+    return cfg
+
+
+def _create_hermes_config(cfg_path: str, model_name: str, base_url: str,
+                          api_key: str, log_fn: LogFn, name: str) -> bool:
+    """Create a minimal Hermes config.yaml pointing at our local server."""
+    try:
+        Path(cfg_path).parent.mkdir(parents=True, exist_ok=True)
+        key_line = f"  api_key: {api_key}\n" if api_key else "  api_key: ''\n"
+        content = (
+            "model:\n"
+            f"{key_line}"
+            "  api_mode: chat_completions\n"
+            f"  base_url: {base_url}\n"
+            f"  default: {model_name}\n"
+            f"  name: {model_name}\n"
+            "  provider: custom\n"
+            "providers: {}\n"
+            "fallback_providers: []\n"
+        )
+        Path(cfg_path).write_text(content, encoding="utf-8")
+        log_fn(f"[AGENT:{name}] Created config: {cfg_path}", "success")
+        return True
+    except Exception as e:
+        log_fn(f"[AGENT:{name}] Failed to create config: {e}", "warn")
+        return False
+
+
 def _sync_hermes(agent: dict, model_name: str, base_url: str,
                  api_key: str, log_fn: LogFn) -> None:
     """
     Edit Hermes config.yaml to point at the current model.
-    Updates: model.name, model.default, model.base_url, model.api_key
+    Updates: model.name, model.default, model.base_url, model.api_key, model.provider
     Falls back to %LOCALAPPDATA%\\hermes\\config.yaml if config field is empty.
+    Creates the file if it doesn't exist.
     """
-    cfg_path = agent.get("config", "").strip()
-    if not cfg_path:
-        cfg_path = str(Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "config.yaml")
+    name     = agent["name"]
+    cfg_path = _hermes_config_path(agent)
+
     if not Path(cfg_path).exists():
-        return
+        if not _create_hermes_config(cfg_path, model_name, base_url, api_key, log_fn, name):
+            return
+        return  # file is already fully written by _create_hermes_config
+
     try:
         with open(cfg_path, encoding="utf-8") as f:
             lines = f.readlines()
 
-        in_model = False
-        new_lines = []
+        in_model    = False
+        found_keys  = set()
+        new_lines   = []
         for line in lines:
             stripped = line.lstrip()
             indent   = len(line) - len(stripped)
@@ -151,17 +188,28 @@ def _sync_hermes(agent: dict, model_name: str, base_url: str,
             if line.rstrip() == "model:" or line.startswith("model:"):
                 in_model = True
             elif in_model and indent == 0 and stripped and not stripped.startswith("#"):
+                # Leaving the model section — inject any keys we never encountered
+                if "provider" not in found_keys:
+                    new_lines.append("  provider: custom\n")
+                    found_keys.add("provider")
                 in_model = False
 
             if in_model:
                 if stripped.startswith("name:"):
                     line = " " * indent + f"name: {model_name}\n"
+                    found_keys.add("name")
                 elif stripped.startswith("default:"):
                     line = " " * indent + f"default: {model_name}\n"
+                    found_keys.add("default")
                 elif stripped.startswith("base_url:"):
                     line = " " * indent + f"base_url: {base_url}\n"
-                elif stripped.startswith("api_key:") and api_key:
+                    found_keys.add("base_url")
+                elif stripped.startswith("api_key:"):
                     line = " " * indent + f"api_key: {api_key}\n"
+                    found_keys.add("api_key")
+                elif stripped.startswith("provider:"):
+                    line = " " * indent + "provider: custom\n"
+                    found_keys.add("provider")
 
             new_lines.append(line)
 
@@ -169,11 +217,11 @@ def _sync_hermes(agent: dict, model_name: str, base_url: str,
             f.writelines(new_lines)
 
         log_fn(
-            f"[AGENT:{agent['name']}] config synced → model={model_name} url={base_url}",
+            f"[AGENT:{name}] config synced → model={model_name} url={base_url}",
             "success"
         )
     except Exception as e:
-        log_fn(f"[AGENT:{agent['name']}] Config sync failed: {e}", "warn")
+        log_fn(f"[AGENT:{name}] Config sync failed: {e}", "warn")
 
 
 # ── Log streaming ─────────────────────────────────────────────────────────────
