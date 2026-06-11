@@ -364,7 +364,7 @@ class LlamaApp:
             "A GUI manager for llama.cpp running in WSL2.\n"
             "Supports model download, server control,\n"
             "inline chat, and Hermes Agent integration.\n\n"
-            "github.com/dbent/llama-forge",
+            "github.com/Aiesus/LlamaForge",
             parent=self.root,
         )
 
