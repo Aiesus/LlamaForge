@@ -99,7 +99,7 @@ class AgentsTab:
                   relief="flat", cursor="hand2", font=("Segoe UI", 9),
                   command=lambda a=agent, i=idx: self._edit_agent(a, i)
                   ).pack(side="left", padx=2)
-        if agent.get("ui_url"):
+        if agent.get("url"):
             tk.Button(bf, text="🌐", bg=T["btn"], fg=T["accent"],
                       relief="flat", cursor="hand2", font=("Segoe UI", 9),
                       command=lambda a=agent: self._open_ui(a)
@@ -122,7 +122,7 @@ class AgentsTab:
 
     def _open_ui(self, agent: dict) -> None:
         import webbrowser
-        url = agent.get("ui_url", "")
+        url = agent.get("url", "")
         if url:
             webbrowser.open(url)
 
@@ -135,7 +135,7 @@ class AgentsTab:
             "type":             "generic",
             "exe":              "",
             "config":           "",
-            "ui_url":           "",
+            "url":              "",
             "enabled":          True,
             "auto_sync_model":  False,
         }
@@ -190,26 +190,46 @@ class _AgentEditor(tk.Toplevel):
         self._build(T)
 
     def _build(self, T: dict) -> None:
+        from tkinter import filedialog
         a = self._agent
         pad = dict(padx=12, pady=4)
 
+        # Fields: (label, key, browse_type)  browse_type: None | "exe" | "file"
         fields = [
-            ("Name",           "name"),
-            ("Type",           "type"),
-            ("Executable",     "exe"),
-            ("Config path",    "config"),
-            ("UI URL",         "ui_url"),
+            ("Name",        "name",   None),
+            ("Type",        "type",   None),
+            ("Executable",  "exe",    "exe"),
+            ("Config path", "config", "file"),
+            ("URL",         "url",    None),
         ]
         self._vars: dict[str, tk.StringVar] = {}
-        for row, (label, key) in enumerate(fields):
+        for row, (label, key, browse) in enumerate(fields):
             tk.Label(self, text=label, bg=T["bg"], fg=T["fg2"],
                      font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", **pad)
             var = tk.StringVar(value=str(a.get(key, "")))
             self._vars[key] = var
-            tk.Entry(self, textvariable=var, width=46,
+            tk.Entry(self, textvariable=var, width=44,
                      bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
                      font=("Consolas", 9), insertbackground=T["fg"]
                      ).grid(row=row, column=1, sticky="ew", **pad)
+            if browse == "exe":
+                tk.Button(self, text="…", bg=T["btn"], fg=T["btn_fg"],
+                          relief="flat", cursor="hand2", font=("Segoe UI", 9),
+                          command=lambda v=var: v.set(
+                              filedialog.askopenfilename(
+                                  title="Select executable",
+                                  filetypes=[("Executable", "*.exe"), ("All", "*.*")],
+                              ) or v.get()
+                          )).grid(row=row, column=2, padx=(0, 12), pady=4)
+            elif browse == "file":
+                tk.Button(self, text="…", bg=T["btn"], fg=T["btn_fg"],
+                          relief="flat", cursor="hand2", font=("Segoe UI", 9),
+                          command=lambda v=var: v.set(
+                              filedialog.askopenfilename(
+                                  title="Select config file",
+                                  filetypes=[("YAML", "*.yaml *.yml"), ("All", "*.*")],
+                              ) or v.get()
+                          )).grid(row=row, column=2, padx=(0, 12), pady=4)
 
         n_rows = len(fields)
         self._enabled_var   = tk.BooleanVar(value=a.get("enabled", True))
@@ -225,7 +245,7 @@ class _AgentEditor(tk.Toplevel):
                        ).grid(row=n_rows + 1, column=1, sticky="w", padx=12, pady=2)
 
         bf = tk.Frame(self, bg=T["bg"])
-        bf.grid(row=n_rows + 2, column=0, columnspan=2, pady=8)
+        bf.grid(row=n_rows + 2, column=0, columnspan=3, pady=8)
         tk.Button(bf, text="Save", bg=T["green"], fg=T["bg"],
                   relief="flat", cursor="hand2", font=("Segoe UI", 9, "bold"),
                   command=self._save).pack(side="left", padx=6)

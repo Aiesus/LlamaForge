@@ -378,10 +378,10 @@ class LlamaApp:
             self._paned.unbind("<Configure>")
             try:
                 if s.pane_sash0 > 0:
-                    self._paned.sashpos(0, s.pane_sash0)
+                    self._paned.sash_place(0, s.pane_sash0, 0)
                 if s.pane_sash1 > 0:
                     # Small delay so sash-0's layout change propagates first
-                    self.root.after(20, lambda: self._paned.sashpos(1, s.pane_sash1))
+                    self.root.after(20, lambda: self._paned.sash_place(1, s.pane_sash1, 0))
             except Exception:
                 pass
         self._paned.bind("<Configure>", _restore_sashes)
@@ -797,9 +797,9 @@ class LlamaApp:
         s.wsl_memory   = self.state.wsl_memory_var.get()
         s.cuda_swap    = self.state.cuda_swap_var.get()
         try:
-            s.pane_sash0 = self._paned.sashpos(0)
+            s.pane_sash0 = self._paned.sash_coord(0)[0]
             if str(self.right) in self._paned.panes():
-                s.pane_sash1 = self._paned.sashpos(1)
+                s.pane_sash1 = self._paned.sash_coord(1)[0]
         except Exception:
             pass
         save_settings(s)
