@@ -750,3 +750,6 @@ canvas.image = photo  # keep reference
 | `32517d0` | 2026-06-11 | **Hermes + sash fixes** — port V1 Electron detection + CLI launch + UI open; `.gguf` strip on model sync; config auto-detect from `%LOCALAPPDATA%`; fix `url`/`ui_url` key mismatch; add `…` browse buttons to agent editor; fix pane sash persistence (`sashpos()` doesn't exist — use `sash_coord()`/`sash_place()`) |
 | `2d01876` | 2026-06-11 | **Hermes config bootstrap** — create `config.yaml` on first sync if missing; always write `provider: custom` so Hermes uses `base_url` and not a cloud provider fallback |
 | `609e374` | 2026-06-11 | **Hermes auto-detect** — `find_hermes_exe()` / `find_hermes_config()` check standard install paths; agent editor auto-populates blank fields on open; orange install note with URL shown when Hermes not found on disk |
+| `4b9e92f` | 2026-06-11 | **User manual + help** — `USER_MANUAL.md` full end-user doc; `gui/help_window.py` tabbed quick-reference Toplevel (7 sections); Help menu bar with Quick Reference, Re-run Setup Wizard, About |
+| `eb7fc65` | 2026-06-11 | **Rename to LlamaForge** — window title, About dialog, USER_MANUAL.md |
+| `74c792b` | 2026-06-11 | **Repo URL** — set to github.com/Aiesus/LlamaForge |
