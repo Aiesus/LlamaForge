@@ -341,13 +341,15 @@ class HealthChecker:
                  status_fn: StatusFn,
                  model_fn: Callable[[], str],
                  log_fn: LogFn,
-                 interval: float = 3.0):
+                 interval: float = 3.0,
+                 skip_fn: Callable[[], bool] | None = None):
         self._port_fn    = port_fn
         self._api_key_fn = api_key_fn
         self._status_fn  = status_fn
         self._model_fn   = model_fn
         self._log        = log_fn
         self._interval   = interval
+        self._skip_fn    = skip_fn
         self._running    = False
 
     def start(self) -> None:
@@ -361,18 +363,19 @@ class HealthChecker:
         was_ok = False
         while self._running:
             is_ok = False
-            try:
-                port    = self._port_fn()
-                api_key = self._api_key_fn()
-                req = urllib.request.Request(f"http://localhost:{port}/health")
-                if api_key:
-                    req.add_header("Authorization", f"Bearer {api_key}")
-                with urllib.request.urlopen(req, timeout=2) as r:
-                    is_ok = (r.status == 200)
-            except urllib.error.HTTPError:
-                is_ok = False
-            except Exception:
-                is_ok = False
+            if not (self._skip_fn and self._skip_fn()):
+                try:
+                    port    = self._port_fn()
+                    api_key = self._api_key_fn()
+                    req = urllib.request.Request(f"http://localhost:{port}/health")
+                    if api_key:
+                        req.add_header("Authorization", f"Bearer {api_key}")
+                    with urllib.request.urlopen(req, timeout=2) as r:
+                        is_ok = (r.status == 200)
+                except urllib.error.HTTPError:
+                    is_ok = False
+                except Exception:
+                    is_ok = False
 
             model = self._model_fn()
             if is_ok and not was_ok:

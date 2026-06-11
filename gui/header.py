@@ -4,7 +4,10 @@ Header bar — server status, GPU/RAM/CPU bars, tokens/sec.
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 
 from core.monitor  import MonitorSnapshot
 
@@ -13,7 +16,7 @@ LogFn = Callable[[str, str | None], None]
 
 class Header:
 
-    def __init__(self, root: tk.Tk, state, T: dict, log_fn: LogFn):
+    def __init__(self, root: tk.Tk, state: AppState, T: dict, log_fn: LogFn):
         self._root    = root
         self._state   = state
         self._T       = T

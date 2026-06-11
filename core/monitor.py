@@ -132,34 +132,31 @@ class Monitor:
         except Exception:
             pass
 
-        # ── Windows CPU % ─────────────────────────────────────────────────────
+        # ── Windows CPU % + RAM (single PowerShell call) ─────────────────────
         try:
             r = subprocess.run(
-                "wmic cpu get LoadPercentage",
-                shell=True, capture_output=True, text=True, timeout=5
+                ["powershell", "-NoProfile", "-Command",
+                 "$cpu=(Get-CimInstance Win32_Processor).LoadPercentage;"
+                 "$mem=(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory;"
+                 'Write-Output "CPU $cpu"; Write-Output "MEM $mem"'],
+                capture_output=True, text=True, timeout=5
             )
             for line in r.stdout.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    snap.win_cpu_pct = float(line)
-                    break
-        except Exception:
-            pass
-
-        # ── Windows RAM ───────────────────────────────────────────────────────
-        try:
-            r = subprocess.run(
-                "wmic OS get FreePhysicalMemory",
-                shell=True, capture_output=True, text=True, timeout=5
-            )
-            for line in r.stdout.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    free_kb = int(line)
-                    snap.win_ram_used_gb = (
-                        self._win_ram_total_gb - free_kb / (1024 ** 2)
-                    )
-                    break
+                parts = line.strip().split()
+                if len(parts) == 2:
+                    if parts[0] == "CPU":
+                        try:
+                            snap.win_cpu_pct = float(parts[1])
+                        except ValueError:
+                            pass
+                    elif parts[0] == "MEM":
+                        try:
+                            free_kb = int(parts[1])
+                            snap.win_ram_used_gb = (
+                                self._win_ram_total_gb - free_kb / (1024 ** 2)
+                            )
+                        except ValueError:
+                            pass
         except Exception:
             pass
 

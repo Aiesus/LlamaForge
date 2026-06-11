@@ -8,7 +8,10 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 
 import core.wsl as wsl
 from core.settings import DEFAULT_FORKS, save_settings
@@ -29,7 +32,7 @@ _TURBO_CANDIDATES  = ["~/llama-turbo", "~/llama.cpp-turbo", "~/llama-tq", "~/tur
 
 class SetupWizard:
 
-    def __init__(self, root: tk.Tk, state, T: dict, on_complete: Callable):
+    def __init__(self, root: tk.Tk, state: AppState, T: dict, on_complete: Callable):
         self._root        = root
         self._state       = state
         self._T           = T

@@ -2,7 +2,10 @@
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 
 from gui.widgets import section, sep, spinbox, slider_spin, flag_row, grid_frame
 
@@ -13,7 +16,7 @@ MIROSTAT_LABELS = {0: "Off", 1: "v1", 2: "v2"}
 
 class SamplingTab:
 
-    def __init__(self, frame: tk.Frame, state, T: dict, log_fn: LogFn):
+    def __init__(self, frame: tk.Frame, state: AppState, T: dict, log_fn: LogFn):
         self._frame = frame
         self._state = state
         self._T     = T

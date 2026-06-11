@@ -4,7 +4,10 @@ import json
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, scrolledtext
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 
 import core.agents as agents_core
 from core.settings import save_agents
@@ -14,7 +17,7 @@ LogFn = Callable[[str, str | None], None]
 
 class AgentsTab:
 
-    def __init__(self, frame: tk.Frame, state, T: dict, log_fn: LogFn):
+    def __init__(self, frame: tk.Frame, state: AppState, T: dict, log_fn: LogFn):
         self._frame = frame
         self._state = state
         self._T     = T

@@ -5,7 +5,10 @@ import io
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 
 from core.settings import load_bench_results, save_bench_result, DEFAULT_FORKS
 import core.optimizer as optimizer
@@ -36,7 +39,7 @@ RESULT_COLS = ("pp t/s", "tg t/s", "ngl", "ctx", "batch", "cache_k", "cache_v", 
 
 class OptimizerTab:
 
-    def __init__(self, frame: tk.Frame, state, T: dict, log_fn: LogFn):
+    def __init__(self, frame: tk.Frame, state: AppState, T: dict, log_fn: LogFn):
         self._frame  = frame
         self._state  = state
         self._T      = T

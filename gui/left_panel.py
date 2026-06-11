@@ -7,7 +7,10 @@ import re
 from pathlib import Path
 from tkinter import ttk, messagebox, simpledialog
 import tkinter as tk
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 
 from core.settings import BUILTIN_PROFILES, save_profiles
 from core.server   import ServerState
@@ -99,7 +102,7 @@ _HDR = {"name": "Name", "size": "Size", "params": "Params", "quant": "Quant"}
 
 class LeftPanel:
 
-    def __init__(self, root: tk.Tk, state, T: dict, log_fn: LogFn):
+    def __init__(self, root: tk.Tk, state: AppState, T: dict, log_fn: LogFn):
         self._root   = root
         self._state  = state
         self._T      = T
@@ -534,7 +537,20 @@ class LeftPanel:
 
     def _open_llama_ui(self) -> None:
         import webbrowser
-        webbrowser.open(f"http://localhost:{self._state.port_var.get()}")
+        port    = self._state.port_var.get()
+        api_key = self._state.api_key_server_var.get().strip()
+
+        # Pass key in URL fragment — newer llama.cpp builds read it from there.
+        # Also copy to clipboard as a fallback for older builds that prompt manually.
+        if api_key:
+            url = f"http://localhost:{port}/#api_key={api_key}"
+            self._root.clipboard_clear()
+            self._root.clipboard_append(api_key)
+            self._log("[INFO] API key copied to clipboard — paste if the UI prompts.", "info")
+        else:
+            url = f"http://localhost:{port}/"
+
+        webbrowser.open(url)
 
     def _restart_proxy(self) -> None:
         from core.wsl import restart_proxy

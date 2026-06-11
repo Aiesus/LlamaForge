@@ -9,7 +9,10 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from gui.app import AppState
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -29,6 +32,33 @@ _REAP_RE  = re.compile(r'\bREAP\b', re.IGNORECASE)
 _MTP_RE   = re.compile(r'\bMTP\b',  re.IGNORECASE)
 _CODER_RE = re.compile(r'\b(coder|coding|codestral|codegen)\b', re.IGNORECASE)
 
+# Vision-language (image understanding) — name patterns + HF pipeline tags
+_VISION_RE   = re.compile(
+    r'\b(vl|vision|llava|internvl|moondream|pixtral|cogvlm|paligemma|idefics|'
+    r'qwen.*vl|phi.*vision|minicpm.*v|yi.*vl|deepseek.*vl|aria|ovis|got.ocr|'
+    r'smolvlm|emu|cambrian|mantis|bunny|dragonfly)\b',
+    re.IGNORECASE,
+)
+_VISION_TAGS = frozenset({"vision", "image-text-to-text", "visual-question-answering",
+                           "image-to-text", "vqa"})
+
+# Audio — TTS + ASR/STT — name patterns + HF pipeline tags
+_AUDIO_RE    = re.compile(
+    r'\b(whisper|bark|kokoro|xtts|speecht5|voicecraft|fish.?speech|f5.?tts|'
+    r'dia|zonos|chatterbox|orpheus|parler|outetts|csm)\b',
+    re.IGNORECASE,
+)
+_AUDIO_TAGS  = frozenset({"text-to-speech", "automatic-speech-recognition",
+                           "audio", "tts", "asr", "speech"})
+
+# Image generation — FLUX, SD3, SDXL GGUF variants + HF pipeline tags
+_IMGGEN_RE   = re.compile(
+    r'\b(flux|stable.diffusion|sdxl|sd3|kolors|hunyuan.?dit|pixart|'
+    r'aura.?flow|lumina)\b',
+    re.IGNORECASE,
+)
+_IMGGEN_TAGS = frozenset({"text-to-image", "image-generation"})
+
 
 def _parse_quant(filename: str) -> str:
     m = _QUANT_RE.search(filename)
@@ -40,14 +70,30 @@ def _is_reap(name: str)  -> bool: return bool(_REAP_RE.search(name))
 def _is_mtp(name: str)   -> bool: return bool(_MTP_RE.search(name))
 def _is_coder(name: str) -> bool: return bool(_CODER_RE.search(name))
 
+def _is_vision(mid: str, tags: list | tuple = ()) -> bool:
+    return bool(_VISION_RE.search(mid)) or bool(_VISION_TAGS & set(tags))
 
-def _model_tags(mid: str) -> str:
-    """Return a compact space-separated tag string for the Tags column."""
+def _is_audio(mid: str, tags: list | tuple = ()) -> bool:
+    return bool(_AUDIO_RE.search(mid)) or bool(_AUDIO_TAGS & set(tags))
+
+def _is_imggen(mid: str, tags: list | tuple = ()) -> bool:
+    return bool(_IMGGEN_RE.search(mid)) or bool(_IMGGEN_TAGS & set(tags))
+
+
+def _model_tags(r: dict | str) -> str:
+    """Return compact badge string for the Tags column. Accepts full repo dict or bare model ID."""
+    if isinstance(r, str):
+        mid, hf_tags = r, ()
+    else:
+        mid, hf_tags = r.get("modelId", ""), r.get("tags", ())
     parts = []
-    if _is_moe(mid):   parts.append("MoE")
-    if _is_reap(mid):  parts.append("REAP")
-    if _is_mtp(mid):   parts.append("MTP")
-    if _is_coder(mid): parts.append("code")
+    if _is_moe(mid):             parts.append("MoE")
+    if _is_reap(mid):            parts.append("REAP")
+    if _is_mtp(mid):             parts.append("MTP")
+    if _is_coder(mid):           parts.append("code")
+    if _is_vision(mid, hf_tags):  parts.append("vis")
+    if _is_audio(mid, hf_tags):   parts.append("audio")
+    if _is_imggen(mid, hf_tags):  parts.append("img")
     return " ".join(parts)
 
 
@@ -91,7 +137,7 @@ def _clean_model_name(model_id: str) -> str:
 
 class DownloadManager(tk.Toplevel):
 
-    def __init__(self, root: tk.Tk, state, T: dict,
+    def __init__(self, root: tk.Tk, state: AppState, T: dict,
                  log_fn: LogFn, on_complete: Callable | None = None):
         super().__init__(root)
         self.title("Download Models")
@@ -160,22 +206,28 @@ class DownloadManager(tk.Toplevel):
         fr.pack(fill="x", padx=10, pady=(0, 2))
         tk.Label(fr, text="Filter:", bg=T["bg"], fg=T["fg2"],
                  font=("Segoe UI", 9)).pack(side="left")
-        self._moe_only_var  = tk.BooleanVar()
-        self._reap_only_var = tk.BooleanVar()
-        self._mtp_only_var  = tk.BooleanVar()
-        self._coder_only_var = tk.BooleanVar()
+        self._moe_only_var    = tk.BooleanVar()
+        self._reap_only_var   = tk.BooleanVar()
+        self._mtp_only_var    = tk.BooleanVar()
+        self._coder_only_var  = tk.BooleanVar()
+        self._vision_only_var = tk.BooleanVar()
+        self._audio_only_var  = tk.BooleanVar()
+        self._imggen_only_var = tk.BooleanVar()
         for label, var in (
-            ("MoE",   self._moe_only_var),
-            ("REAP",  self._reap_only_var),
-            ("MTP",   self._mtp_only_var),
-            ("Coder", self._coder_only_var),
+            ("MoE",    self._moe_only_var),
+            ("REAP",   self._reap_only_var),
+            ("MTP",    self._mtp_only_var),
+            ("Coder",  self._coder_only_var),
+            ("Vision", self._vision_only_var),
+            ("Audio",  self._audio_only_var),
+            ("ImgGen", self._imggen_only_var),
         ):
             tk.Checkbutton(
                 fr, text=label, variable=var,
                 bg=T["bg"], fg=T["fg"], selectcolor=T["bg3"],
                 activebackground=T["bg"], font=("Segoe UI", 9),
                 command=self._browse_apply_filter,
-            ).pack(side="left", padx=(8, 0))
+            ).pack(side="left", padx=(6, 0))
 
         self._browse_status = tk.Label(
             f, text='Search HuggingFace — e.g. "Qwen3", "Llama", "bartowski"',
@@ -199,11 +251,11 @@ class DownloadManager(tk.Toplevel):
                 _col, text=_lbl,
                 command=lambda c=_col: self._sort_repos(c),
             )
-        self._repo_tree.column("model",      width=260)
-        self._repo_tree.column("publisher",  width=115)
-        self._repo_tree.column("downloads",  width=75,  anchor="e")
-        self._repo_tree.column("tags",       width=80,  anchor="center")
-        self._repo_tree.column("updated",    width=88,  anchor="center")
+        self._repo_tree.column("model",      width=245)
+        self._repo_tree.column("publisher",  width=110)
+        self._repo_tree.column("downloads",  width=72,  anchor="e")
+        self._repo_tree.column("tags",       width=105, anchor="center")
+        self._repo_tree.column("updated",    width=85,  anchor="center")
         self._repo_tree.pack(side="left", fill="x", expand=True)
         rsb = ttk.Scrollbar(rf, orient="vertical", command=self._repo_tree.yview)
         self._repo_tree.configure(yscrollcommand=rsb.set)
@@ -375,13 +427,9 @@ class DownloadManager(tk.Toplevel):
         for row in self._repo_tree.get_children():
             self._repo_tree.delete(row)
         self._browse_repos = []
-        threading.Thread(target=self._fetch_repos, args=("",), daemon=True).start()
+        threading.Thread(target=self._fetch_repos, daemon=True).start()
 
     def _browse_search(self) -> None:
-        q = self._browse_q_var.get().strip()
-        if not q:
-            self._load_popular()
-            return
         self._browse_status.config(text="Searching HuggingFace…")
         for row in self._repo_tree.get_children():
             self._repo_tree.delete(row)
@@ -389,21 +437,41 @@ class DownloadManager(tk.Toplevel):
             self._browse_file_tree.delete(row)
         self._browse_repos = []
         self._browse_files = []
-        threading.Thread(target=self._fetch_repos, args=(q,), daemon=True).start()
+        threading.Thread(target=self._fetch_repos, daemon=True).start()
 
-    def _fetch_repos(self, query: str) -> None:
-        params_dict: dict = {
-            "tags":      "gguf",
-            "sort":      "downloads",
-            "direction": "-1",
-            "limit":     "40",
-        }
-        if query:
-            params_dict["search"] = query
-        url = f"https://huggingface.co/api/models?{urllib.parse.urlencode(params_dict)}"
+    def _fetch_repos(self) -> None:
+        # Build effective query: user text + active niche-filter terms.
+        # Without this, REAP/MTP/vision/audio models don't appear in top-N downloads.
+        base = self._browse_q_var.get().strip()
+        extra: list[str] = []
+        bl = base.lower()
+        if self._reap_only_var.get()   and "reap"   not in bl: extra.append("REAP")
+        if self._mtp_only_var.get()    and "mtp"    not in bl: extra.append("MTP")
+        if self._coder_only_var.get()  and "coder"  not in bl: extra.append("coder")
+        if self._vision_only_var.get() and "vision" not in bl and "vl" not in bl:
+            extra.append("VL")
+        if self._audio_only_var.get()  and "speech" not in bl and "whisper" not in bl:
+            extra.append("speech")
+        if self._imggen_only_var.get() and "flux" not in bl and "diffusion" not in bl:
+            extra.append("flux")
+        effective = " ".join(filter(None, [base] + extra))
+
+        any_filter = any([
+            self._moe_only_var.get(),    self._reap_only_var.get(),
+            self._mtp_only_var.get(),    self._coder_only_var.get(),
+            self._vision_only_var.get(), self._audio_only_var.get(),
+            self._imggen_only_var.get(),
+        ])
+        limit = "100" if any_filter else "40"
+
+        params: dict = {"tags": "gguf", "sort": "downloads", "direction": "-1", "limit": limit}
+        if effective:
+            params["search"] = effective
+
+        url = f"https://huggingface.co/api/models?{urllib.parse.urlencode(params)}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "llama-gui/2"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 self._browse_repos = json.loads(resp.read())
             self.after(0, self._browse_populate_repos)
         except Exception as e:
@@ -413,7 +481,7 @@ class DownloadManager(tk.Toplevel):
         "model":     lambda r: _clean_model_name(r.get("modelId", "")).lower(),
         "publisher": lambda r: r.get("modelId", "").split("/")[0].lower(),
         "downloads": lambda r: r.get("downloads", 0),
-        "tags":      lambda r: _model_tags(r.get("modelId", "")),
+        "tags":      lambda r: _model_tags(r),
         "updated":   lambda r: r.get("lastModified", ""),
     }
 
@@ -426,21 +494,28 @@ class DownloadManager(tk.Toplevel):
     def _browse_populate_repos(self) -> None:
         repos = list(self._browse_repos)
 
-        # Apply all active tag filters (AND logic — each enabled filter narrows further)
+        # AND-logic filters — each checked box narrows the list further
+        mid_fn  = lambda r: r.get("modelId", "")
+        tags_fn = lambda r: r.get("tags", ())
         if self._moe_only_var.get():
-            repos = [r for r in repos if _is_moe(r.get("modelId", ""))]
+            repos = [r for r in repos if _is_moe(mid_fn(r))]
         if self._reap_only_var.get():
-            repos = [r for r in repos if _is_reap(r.get("modelId", ""))]
+            repos = [r for r in repos if _is_reap(mid_fn(r))]
         if self._mtp_only_var.get():
-            repos = [r for r in repos if _is_mtp(r.get("modelId", ""))]
+            repos = [r for r in repos if _is_mtp(mid_fn(r))]
         if self._coder_only_var.get():
-            repos = [r for r in repos if _is_coder(r.get("modelId", ""))]
+            repos = [r for r in repos if _is_coder(mid_fn(r))]
+        if self._vision_only_var.get():
+            repos = [r for r in repos if _is_vision(mid_fn(r), tags_fn(r))]
+        if self._audio_only_var.get():
+            repos = [r for r in repos if _is_audio(mid_fn(r), tags_fn(r))]
+        if self._imggen_only_var.get():
+            repos = [r for r in repos if _is_imggen(mid_fn(r), tags_fn(r))]
 
         sort_col, reverse = self._repo_sort
         key_fn = self._REPO_SORT_KEY.get(sort_col, self._REPO_SORT_KEY["downloads"])
         repos.sort(key=key_fn, reverse=reverse)
 
-        # Update headings to show sort arrow
         arrow  = {True: " ▼", False: " ▲"}
         labels = {"model": "Model", "publisher": "Publisher",
                   "downloads": "Downloads", "tags": "Tags", "updated": "Updated"}
@@ -454,7 +529,7 @@ class DownloadManager(tk.Toplevel):
             parts   = mid.split("/", 1)
             pub     = parts[0] if len(parts) == 2 else ""
             dl      = _fmt_dl(r.get("downloads", 0))
-            tags    = _model_tags(mid)
+            tags    = _model_tags(r)
             updated = _fmt_date(r.get("lastModified", ""))
             self._repo_tree.insert("", tk.END, iid=mid,
                                    values=(_clean_model_name(mid), pub, dl, tags, updated))
@@ -464,7 +539,9 @@ class DownloadManager(tk.Toplevel):
         self._browse_status.config(text=f"{label} — select one to see variants.")
 
     def _browse_apply_filter(self) -> None:
-        self._browse_populate_repos()
+        # Re-fetch so the API query includes any newly-active niche filter terms
+        # (e.g. REAP models don't appear in top-40 without querying for them).
+        self._browse_search()
 
     def _on_repo_select(self, event=None) -> None:
         sel = self._repo_tree.selection()
@@ -543,7 +620,7 @@ class DownloadManager(tk.Toplevel):
             )
 
     def _fetch_files(self, repo: str, mode: str) -> None:
-        url = f"https://huggingface.co/api/models/{repo}"
+        url = f"https://huggingface.co/api/models/{repo}?blobs=true"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "llama-gui/2"})
             with urllib.request.urlopen(req, timeout=15) as resp:

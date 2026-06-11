@@ -69,7 +69,8 @@ llama-gui-v2/
 │   │   ├── agents_tab.py     # agent list, add/remove, start/stop/open per agent
 │   │   └── optimizer_tab.py  # llama-bench GUI (guided + sweep modes)
 │   ├── setup_wizard.py       # first-run dialog
-│   └── download_manager.py   # HuggingFace download popup
+│   ├── chat_panel.py         # inline SSE chat panel (vertical split in log pane)
+│   └── download_manager.py   # HuggingFace download popup (browse + direct + queue)
 ├── core/
 │   ├── settings.py           # load/save settings.json + profiles.json + agents.json
 │   ├── wsl.py                # all WSL shell interactions (run cmd, detect distros, get user)
@@ -594,6 +595,102 @@ When porting V1 code into V2 modules:
 
 ---
 
+---
+
+## Future Feature: Image Generation Server
+
+**Status:** Designed, not implemented. Implement when user decides to proceed.
+
+### Summary
+Add a second server type for `stable-diffusion.cpp` / `sd-server` alongside the existing
+llama-server. Lets the user run FLUX/SD GGUF models for text-to-image generation directly
+from the GUI. The ImgGen filter in the download browser already exists — this completes
+the loop.
+
+### Decisions already made
+| Decision | Answer |
+|---|---|
+| sd.cpp setup location | Embedded in Image tab (not main wizard) |
+| Pillow dependency | Install-on-demand prompt inside Image tab |
+| Output folder | User-configurable field in Image tab |
+| Scope | txt2img only (no img2img, inpainting, LoRA) |
+
+### New files
+| File | Purpose |
+|---|---|
+| `core/sd_server.py` | `SdServerController` — start/stop/monitor `sd-server` in WSL |
+| `gui/tabs/image_tab.py` | Full Image tab: setup section, params, canvas, history strip |
+
+### Changes to existing files
+| File | Change |
+|---|---|
+| `core/settings.py` | Add `sd_root`, `sd_bin`, `sd_port`, `sd_output_dir` fields |
+| `gui/app.py` | Wire up Image tab + sd server controller |
+| `gui/left_panel.py` | Image server status pill + start/stop button below main server block |
+
+### Image tab layout
+```
+┌─ Setup (collapses once configured) ────────────────────────────────┐
+│ sd.cpp root in WSL: [~/stable-diffusion.cpp   ] [Test]            │
+│ Output folder:      [C:\Users\...\sd-output   ] [Browse]          │
+│ Port: [8090]    [Install Pillow]  status: ● ready / ✗ not found   │
+└────────────────────────────────────────────────────────────────────┘
+┌─ Left column ──────────┐  ┌─ Right: image canvas ──────────────┐
+│ Model (GGUF dropdown)  │  │                                    │
+│ Width × Height preset  │  │   [generated image displayed here] │
+│ Steps  CFG  Seed       │  │                                    │
+│ Sampler                │  ├────────────────────────────────────┤
+│ Positive prompt        │  │ [thumb] [thumb] [thumb] ← history  │
+│ Negative prompt        │  └────────────────────────────────────┘
+│ [Generate]  [■ Stop]   │
+│ progress bar           │
+└────────────────────────┘
+```
+
+### SdServerController pattern
+Mirrors `core/server.py` `ServerController`:
+- `start(model_path)` — builds `sd-server` command, launches via `wsl -d {distro}`
+- `stop()` — `pkill -f sd-server` in WSL
+- `_stream_log()` — same pattern: reads stdout, fires log_fn callbacks
+- `state` — same `ServerState` enum (STOPPED / LOADING / RUNNING)
+
+### sd-server API (stable-diffusion.cpp)
+```
+POST http://localhost:{sd_port}/txt2img
+{
+  "prompt": "...", "negative_prompt": "...",
+  "width": 1024, "height": 1024,
+  "sample_steps": 20, "cfg_scale": 7.0,
+  "seed": -1, "sampling_method": "euler"
+}
+→ { "images": ["<base64 PNG>"] }
+```
+Note: FLUX models ignore cfg_scale — hide that field when a FLUX model is selected
+(detected by `_IMGGEN_RE` matching "flux" in the filename).
+
+### Pillow install flow
+On tab open: `try: import PIL` — if ImportError:
+Show inline message with a "Install Pillow" button that runs:
+`wsl -d {distro} python3 -m pip install pillow` (no — Pillow is Windows-side here, for
+tkinter ImageTk). Run: `subprocess.run([sys.executable, "-m", "pip", "install", "pillow"])`.
+Re-import after. Only needed once.
+
+### Image display
+```python
+from PIL import Image, ImageTk
+import base64, io
+img_data = base64.b64decode(response["images"][0])
+img = Image.open(io.BytesIO(img_data))
+photo = ImageTk.PhotoImage(img)
+canvas.create_image(0, 0, anchor="nw", image=photo)
+canvas.image = photo  # keep reference
+```
+
+### Rough effort
+~450 lines across 3 new/modified files. Larger than chat panel, same architecture pattern.
+
+---
+
 ## Open Questions
 
 - [ ] **Name** — not decided yet
@@ -609,32 +706,32 @@ When porting V1 code into V2 modules:
 
 | Area | Status |
 |------|--------|
-| V2 directory created | ✅ |
 | Plan document | ✅ |
-| File structure | planned |
-| Theme system design | planned |
-| Hardware detection design | planned |
-| Optimizer guided mode logic | planned |
-| Optimizer sweep mode | planned |
-| First-run wizard | planned |
-| Agents tab design | planned |
+| `main.py` entry point | ✅ |
 | `core/settings.py` | ✅ |
 | `core/wsl.py` | ✅ |
 | `core/hardware.py` | ✅ |
-| `main.py` entry point | ✅ |
 | `core/monitor.py` | ✅ |
 | `core/server.py` | ✅ |
+| `core/optimizer.py` | ✅ |
+| `core/agents.py` | ✅ |
 | `gui/themes.py` | ✅ |
-| `gui/app.py` (AppState + root) | ✅ |
-| `gui/header.py` | not started |
-| `gui/left_panel.py` | not started |
-| Modular port of V1 | not started |
-| Server tab | not started |
-| Model tab | not started |
-| Sampling tab | not started |
-| Advanced tab | not started |
-| Agents tab | not started |
-| Optimizer tab | not started |
-| Download manager | not started |
-| Fork support | not started |
+| `gui/app.py` | ✅ |
+| `gui/header.py` | ✅ |
+| `gui/left_panel.py` | ✅ |
+| `gui/chat_panel.py` | ✅ |
+| `gui/setup_wizard.py` | ✅ |
+| `gui/download_manager.py` | ✅ |
+| `gui/widgets.py` | ✅ |
+| `gui/tabs/server_tab.py` | ✅ |
+| `gui/tabs/model_tab.py` | ✅ |
+| `gui/tabs/sampling_tab.py` | ✅ |
+| `gui/tabs/advanced_tab.py` | ✅ |
+| `gui/tabs/agents_tab.py` | ✅ |
+| `gui/tabs/optimizer_tab.py` | ✅ |
+| Fork support (Official + TurboQuant) | ✅ |
+| HuggingFace download browser + queue | ✅ |
+| Capability filters (MoE/REAP/MTP/Coder/Vision/Audio/ImgGen) | ✅ |
+| Inline chat panel (SSE streaming) | ✅ |
+| Image generation server (sd.cpp) | planned — see Future Feature section |
 | exe build spec | not started |
