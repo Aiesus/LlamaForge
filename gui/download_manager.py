@@ -581,14 +581,18 @@ class DownloadManager(tk.Toplevel):
             tags = ("owned",) if f["name"] in owned else ()
             self._browse_file_tree.insert(
                 "", tk.END, iid=f["name"],
-                values=(_parse_quant(f["name"]) or "—",
+                values=(_parse_quant(f["name"]) or "full",
                         _fmt_size(f["size"]) if f["size"] else "?",
                         have, f["name"]),
                 tags=tags,
             )
             shown += 1
-        self._browse_status.config(
-            text=f"{shown} variant(s) for {_clean_model_name(self._active_repo)}")
+        if shown == 0 and not self._browse_files:
+            self._browse_status.config(
+                text=f"No GGUF files found in {_clean_model_name(self._active_repo)} — try By Repo ID tab")
+        else:
+            self._browse_status.config(
+                text=f"{shown} variant(s) for {_clean_model_name(self._active_repo)}")
 
     def _direct_search(self) -> None:
         repo = self._repo_var.get().strip()
@@ -613,7 +617,7 @@ class DownloadManager(tk.Toplevel):
             tags = ("owned",) if f["name"] in owned else ()
             self._direct_tree.insert(
                 "", tk.END, iid=f["name"],
-                values=(f["name"], _parse_quant(f["name"]),
+                values=(f["name"], _parse_quant(f["name"]) or "full",
                         _fmt_size(f["size"]) if f["size"] else "?",
                         have),
                 tags=tags,
