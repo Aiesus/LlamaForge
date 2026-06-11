@@ -15,6 +15,7 @@ SETTINGS_FILE = APP_DIR / "settings.json"
 PROFILES_FILE = APP_DIR / "profiles.json"
 AGENTS_FILE   = APP_DIR / "agents.json"
 BENCH_FILE    = APP_DIR / "bench_results.json"
+CRASH_LOG     = APP_DIR / "crash.log"
 
 # ── Default profile ────────────────────────────────────────────────────────────
 

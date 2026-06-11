@@ -533,7 +533,19 @@ class LeftPanel:
             bg=T["btn"], fg=T["btn_fg"], relief="flat", cursor="hand2",
             font=("Segoe UI", 9), pady=3,
             command=self._open_theme_picker,
-        ).pack(fill="x", padx=8, pady=(2, 8))
+        ).pack(fill="x", padx=8, pady=2)
+
+        from core.settings import CRASH_LOG
+        has_crashes = CRASH_LOG.exists() and CRASH_LOG.stat().st_size > 0
+        self._crash_btn = tk.Button(
+            self._ctrl_col,
+            text="⚠ Crash Log" if has_crashes else "Crash Log",
+            bg=T["red"] if has_crashes else T["btn"],
+            fg=T["bg"] if has_crashes else T["btn_fg"],
+            relief="flat", cursor="hand2", font=("Segoe UI", 9), pady=3,
+            command=self._open_crash_log,
+        )
+        self._crash_btn.pack(fill="x", padx=8, pady=(2, 8))
 
     def _open_llama_ui(self) -> None:
         import webbrowser
@@ -561,6 +573,58 @@ class LeftPanel:
         from core.server import run_diagnostics
         s = self._state.settings
         run_diagnostics(s.wsl_distro, s.wsl_user, self._state.port_var.get(), self._log)
+
+    def _open_crash_log(self) -> None:
+        from core.settings import CRASH_LOG
+        from tkinter import scrolledtext
+        T = self._T
+        win = tk.Toplevel(self._root)
+        win.title("Crash Log")
+        win.geometry("720x520")
+        win.configure(bg=T["bg"])
+
+        hrow = tk.Frame(win, bg=T["bg"])
+        hrow.pack(fill="x", padx=8, pady=(8, 4))
+        tk.Label(hrow, text="CRASH LOG", bg=T["bg"], fg=T["accent"],
+                 font=("Consolas", 8, "bold")).pack(side="left")
+
+        txt = scrolledtext.ScrolledText(
+            win, bg=T["log_bg"], fg=T["log_fg"],
+            font=("Consolas", 8), relief="flat", wrap="word",
+            state="disabled",
+        )
+
+        def _clear():
+            try:
+                CRASH_LOG.write_text("", encoding="utf-8")
+                txt.config(state="normal")
+                txt.delete("1.0", tk.END)
+                txt.insert(tk.END, "(cleared)")
+                txt.config(state="disabled")
+                self._crash_btn.config(
+                    text="Crash Log", bg=T["btn"], fg=T["btn_fg"])
+            except Exception:
+                pass
+
+        tk.Button(hrow, text="Clear", bg=T["red"], fg=T["bg"],
+                  relief="flat", cursor="hand2", font=("Segoe UI", 8),
+                  command=_clear).pack(side="right", padx=2)
+        tk.Button(hrow, text="Close", bg=T["btn"], fg=T["btn_fg"],
+                  relief="flat", cursor="hand2", font=("Segoe UI", 8),
+                  command=win.destroy).pack(side="right", padx=2)
+
+        txt.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        content = ""
+        try:
+            if CRASH_LOG.exists():
+                content = CRASH_LOG.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        txt.config(state="normal")
+        txt.insert(tk.END, content.strip() or "(no crashes recorded)")
+        txt.config(state="disabled")
+        txt.see(tk.END)
 
     def _open_theme_picker(self) -> None:
         from gui.themes import THEME_LABELS

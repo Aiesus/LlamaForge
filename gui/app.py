@@ -24,6 +24,8 @@ from gui.themes    import get as get_theme, THEME_LABELS, DEFAULT_THEME
 
 LogFn = Callable[[str, str | None], None]
 
+_MAX_LOG_BUFFER = 3000
+
 
 def _ts_to_pct(ts: str) -> int:
     """Parse any --tensor-split value (e.g. '3,2' or '60,40') → GPU 0 integer %."""
@@ -475,6 +477,10 @@ class LlamaApp:
                   relief="flat", cursor="hand2", font=("Segoe UI", 8),
                   command=self._clear_log).pack(side="left", padx=2)
 
+        tk.Button(ctrl, text="Copy", bg=T["btn"], fg=T["btn_fg"],
+                  relief="flat", cursor="hand2", font=("Segoe UI", 8),
+                  command=self._copy_log).pack(side="left", padx=2)
+
         self._chat_toggle_btn = tk.Button(
             ctrl, text="▼ Chat", bg=T["btn"], fg=T["accent"],
             relief="flat", cursor="hand2", font=("Segoe UI", 8),
@@ -499,6 +505,22 @@ class LlamaApp:
         self.log_box.tag_config("warn",    foreground=T["orange"])
         self.log_box.tag_config("info",    foreground=T["accent"])
         self.log_box.tag_config("hermes",  foreground=T["yellow"])
+
+        # ── Log buffer (for filter replay) ───────────────────────────────────
+        self._log_buffer: list[tuple[str, str | None]] = []
+
+        # ── Log filter entry ──────────────────────────────────────────────────
+        filter_row = tk.Frame(self._log_pane, bg=T["bg2"])
+        filter_row.pack(fill="x", padx=8, pady=(0, 2))
+        tk.Label(filter_row, text="Filter:", bg=T["bg2"], fg=T["fg2"],
+                 font=("Segoe UI", 8)).pack(side="left")
+        self._log_filter_var = tk.StringVar()
+        self._log_filter_var.trace_add("write", self._apply_log_filter)
+        tk.Entry(
+            filter_row, textvariable=self._log_filter_var,
+            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
+            font=("Consolas", 8), insertbackground=T["fg"],
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         # ── Chat panel (built now, added to paned on first server-ready) ──────
         from gui.chat_panel import ChatPanel
@@ -616,6 +638,12 @@ class LlamaApp:
     def _log(self, text: str, tag: str | None = None) -> None:
         def _do():
             try:
+                self._log_buffer.append((text, tag))
+                if len(self._log_buffer) > _MAX_LOG_BUFFER:
+                    del self._log_buffer[:-_MAX_LOG_BUFFER]
+                q = self._log_filter_var.get().strip().lower()
+                if q and q not in text.lower():
+                    return
                 self.log_box.config(state="normal")
                 self.log_box.insert(tk.END, text + "\n", tag or "")
                 if not self.state._scroll_paused:
@@ -625,10 +653,33 @@ class LlamaApp:
                 pass
         self._safe_after(_do)
 
-    def _clear_log(self):
+    def _clear_log(self) -> None:
+        self._log_buffer.clear()
         self.log_box.config(state="normal")
         self.log_box.delete("1.0", tk.END)
         self.log_box.config(state="disabled")
+
+    def _copy_log(self) -> None:
+        try:
+            text = self.log_box.get("1.0", tk.END)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        except Exception:
+            pass
+
+    def _apply_log_filter(self, *_) -> None:
+        try:
+            q = self._log_filter_var.get().strip().lower()
+            self.log_box.config(state="normal")
+            self.log_box.delete("1.0", tk.END)
+            for text, tag in self._log_buffer:
+                if not q or q in text.lower():
+                    self.log_box.insert(tk.END, text + "\n", tag or "")
+            if not self.state._scroll_paused:
+                self.log_box.see(tk.END)
+            self.log_box.config(state="disabled")
+        except Exception:
+            pass
 
     def _toggle_log(self):
         panes = self._paned.panes()
