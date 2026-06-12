@@ -5,6 +5,7 @@ Streams from /v1/chat/completions using the currently loaded model.
 from __future__ import annotations
 import json
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING, Callable
@@ -71,6 +72,51 @@ class ChatPanel:
         )
         self._sys_text.pack(fill="x", padx=8, pady=(0, 4))
 
+        # ── Send row (packed before history so it always stays visible) ────
+        btn_row = tk.Frame(self.frame, bg=T["bg2"])
+        btn_row.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
+
+        self._send_btn = tk.Button(
+            btn_row, text="⬆  Send  ↵",
+            bg=T["accent"], fg=T["bg"], relief="flat", cursor="hand2",
+            font=("Segoe UI", 9, "bold"), pady=3,
+            command=self._send, state="disabled",
+        )
+        self._send_btn.pack(side="left")
+
+        self._stop_btn = tk.Button(
+            btn_row, text="■  Stop",
+            bg=T["red"], fg=T["bg"], relief="flat", cursor="hand2",
+            font=("Segoe UI", 9), pady=3,
+            command=self._stop, state="disabled",
+        )
+        self._stop_btn.pack(side="left", padx=6)
+
+        self._status_lbl = tk.Label(
+            btn_row, text="Server not loaded",
+            bg=T["bg2"], fg=T["fg2"], font=("Segoe UI", 8),
+        )
+        self._status_lbl.pack(side="right")
+
+        # ── Input area (packed before history, anchored to bottom) ────────
+        # Accent-colored top border makes the input box easy to find
+        tk.Frame(self.frame, bg=T["accent"], height=2).pack(
+            side="bottom", fill="x", padx=8)
+        inp_wrap = tk.Frame(self.frame, bg=T["entry_bg"])
+        inp_wrap.pack(side="bottom", fill="x", padx=8)
+        tk.Label(inp_wrap, text="Message  (Shift+↵ for newline)",
+                 bg=T["entry_bg"], fg=T["fg2"],
+                 font=("Consolas", 7)).pack(anchor="w", padx=6, pady=(4, 0))
+        self._input = tk.Text(
+            inp_wrap, height=3,
+            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
+            font=("Segoe UI", 10), wrap="word",
+            insertbackground=T["fg"], padx=6, pady=4,
+        )
+        self._input.pack(fill="x", padx=2, pady=(0, 4))
+        self._input.bind("<Return>",       self._on_ctrl_enter)
+        self._input.bind("<Shift-Return>", lambda e: self._input.insert("insert", "\n") or "break")
+
         # ── History display ────────────────────────────────────────────────
         hist_wrap = tk.Frame(self.frame, bg=T["log_bg"])
         hist_wrap.pack(fill="both", expand=True, padx=8, pady=(0, 2))
@@ -93,46 +139,6 @@ class ChatPanel:
         self._hist.tag_config("user",      foreground=T["fg"])
         self._hist.tag_config("assistant", foreground=T["fg"])
         self._hist.tag_config("dim",       foreground=T["fg2"])
-
-        # ── Input area ────────────────────────────────────────────────────
-        inp_wrap = tk.Frame(self.frame, bg=T["entry_bg"])
-        inp_wrap.pack(fill="x", padx=8, pady=(2, 0))
-        self._input = tk.Text(
-            inp_wrap, height=3,
-            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
-            font=("Segoe UI", 10), wrap="word",
-            insertbackground=T["fg"], padx=6, pady=4,
-        )
-        self._input.pack(fill="x")
-        self._input.bind("<Control-Return>", self._on_ctrl_enter)
-        self._input.bind("<Shift-Return>",   lambda e: None)  # allow newline
-        self._input.insert("1.0", "")
-
-        # ── Send row ──────────────────────────────────────────────────────
-        btn_row = tk.Frame(self.frame, bg=T["bg2"])
-        btn_row.pack(fill="x", padx=8, pady=(4, 8))
-
-        self._send_btn = tk.Button(
-            btn_row, text="⬆  Send  Ctrl+↵",
-            bg=T["accent"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9, "bold"), pady=3,
-            command=self._send, state="disabled",
-        )
-        self._send_btn.pack(side="left")
-
-        self._stop_btn = tk.Button(
-            btn_row, text="■  Stop",
-            bg=T["red"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9), pady=3,
-            command=self._stop, state="disabled",
-        )
-        self._stop_btn.pack(side="left", padx=6)
-
-        self._status_lbl = tk.Label(
-            btn_row, text="Server not loaded",
-            bg=T["bg2"], fg=T["fg2"], font=("Segoe UI", 8),
-        )
-        self._status_lbl.pack(side="right")
 
     # ── Show / hide ───────────────────────────────────────────────────────────
 
@@ -202,7 +208,9 @@ class ChatPanel:
 
         self._append_hist("You", text, "lbl_user", "user")
 
-        self._streaming = True
+        self._streaming    = True
+        self._token_count  = 0
+        self._stream_t0    = time.monotonic()
         self._stop_evt.clear()
         self._send_btn.config(state="disabled")
         self._stop_btn.config(state="normal")
@@ -271,30 +279,37 @@ class ChatPanel:
                         tok = json.loads(data)["choices"][0]["delta"].get("content", "")
                         if tok:
                             tokens.append(tok)
+                            self._token_count += 1
+                            elapsed = time.monotonic() - self._stream_t0
+                            tps = self._token_count / elapsed if elapsed > 0.1 else 0
                             self._state.root.after(
-                                0, lambda t=tok: self._paint_token(t))
+                                0, lambda t=tok, s=tps: self._paint_token(t, s))
                     except (KeyError, IndexError, json.JSONDecodeError):
                         pass
         except Exception as exc:
             if not self._stop_evt.is_set():
                 error_msg = str(exc)
 
-        full = "".join(tokens)
+        full    = "".join(tokens)
+        elapsed = time.monotonic() - self._stream_t0
+        final_tps = len(tokens) / elapsed if elapsed > 0.1 and tokens else 0.0
         self._messages.append({"role": "assistant", "content": full})
         stopped = self._stop_evt.is_set()
         self._state.root.after(
-            0, lambda: self._stream_done(error_msg, stopped))
+            0, lambda: self._stream_done(error_msg, stopped, final_tps))
 
-    def _paint_token(self, token: str) -> None:
+    def _paint_token(self, token: str, tps: float = 0.0) -> None:
         try:
             self._hist.config(state="normal")
             self._hist.insert(tk.END, token, "assistant")
             self._hist.config(state="disabled")
             self._hist.see(tk.END)
+            if tps > 0:
+                self._status_lbl.config(text=f"{tps:.1f} t/s")
         except Exception:
             pass
 
-    def _stream_done(self, error: str, stopped: bool) -> None:
+    def _stream_done(self, error: str, stopped: bool, tps: float) -> None:
         self._streaming = False
         self._stop_btn.config(state="disabled")
         if self._connected:
@@ -308,12 +323,12 @@ class ChatPanel:
             self._hist.config(state="normal")
             self._hist.insert(tk.END, " [stopped]\n", "dim")
             self._hist.config(state="disabled")
-            self._status_lbl.config(text="[stopped]")
+            self._status_lbl.config(text=f"[stopped]  {tps:.1f} t/s" if tps else "[stopped]")
         else:
             self._hist.config(state="normal")
             self._hist.insert(tk.END, "\n", "")
             self._hist.config(state="disabled")
-            self._status_lbl.config(text="")
+            self._status_lbl.config(text=f"{tps:.1f} t/s" if tps else "")
         self._hist.see(tk.END)
 
     # ── Helpers ───────────────────────────────────────────────────────────────

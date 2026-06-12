@@ -89,6 +89,56 @@ def guided_matrix_count(scenario: str, hw) -> int:
     return len(guided_matrix(scenario, hw))
 
 
+def detect_scenario(hw, model_name: str, model_size_gb: float) -> str:
+    """
+    Pick the best guided scenario based on hardware + model.
+    Returns one of the SCENARIOS strings.
+    """
+    if not hw or not hw.detected:
+        return "Full GPU"
+
+    vram_gb   = hw.vram_total_gb
+    gpu_count = getattr(hw, "gpu_count", 1)
+    is_moe    = any(x in model_name.lower() for x in ("moe", "-moe-", "mixtral", "qwen-moe"))
+    fits      = model_size_gb > 0 and model_size_gb < vram_gb * 0.90
+
+    if is_moe:
+        return "MoE CPU Offload"
+    if not fits and model_size_gb > 0:
+        return "Partial Offload"
+    if fits and gpu_count >= 2:
+        return "Full Multi-GPU"
+    return "Full GPU"
+
+
+def detect_scenario_reason(hw, model_name: str, model_size_gb: float) -> str:
+    """Return a one-line explanation of why detect_scenario() chose what it did."""
+    if not hw or not hw.detected:
+        return "Hardware not detected — defaulting to Full GPU."
+    vram_gb   = hw.vram_total_gb
+    gpu_count = getattr(hw, "gpu_count", 1)
+    is_moe    = any(x in model_name.lower() for x in ("moe", "-moe-", "mixtral", "qwen-moe"))
+    fits      = model_size_gb > 0 and model_size_gb < vram_gb * 0.90
+
+    if is_moe:
+        return f"Model name contains MoE pattern → MoE CPU Offload scenario."
+    if not fits and model_size_gb > 0:
+        return f"Model {model_size_gb:.1f} GB > {vram_gb:.0f} GB VRAM → Partial Offload."
+    if fits and gpu_count >= 2:
+        return f"Model {model_size_gb:.1f} GB fits in {vram_gb:.0f} GB VRAM, {gpu_count} GPUs → Full Multi-GPU."
+    return f"Model {model_size_gb:.1f} GB fits in {vram_gb:.0f} GB VRAM → Full GPU."
+
+
+# ~30 seconds per combo is a rough average for a typical bench run
+_SECS_PER_COMBO = 30
+
+def estimated_minutes(n_combos: int) -> str:
+    secs = n_combos * _SECS_PER_COMBO
+    if secs < 90:
+        return f"~{secs}s"
+    return f"~{secs // 60} min"
+
+
 # ── Sweep combo generator ─────────────────────────────────────────────────────
 
 _SWEEP_RANGES: dict[str, list] = {
@@ -101,6 +151,36 @@ _SWEEP_RANGES: dict[str, list] = {
     "cache_type_v": ["f16", "q8_0", "turbo4"],
     "threads":      [2, 4, 8, 16],
 }
+
+
+def sweep_combos_custom(ranges: dict[str, list], base_profile: dict, hw) -> list[dict]:
+    """
+    Generate combos from caller-supplied ranges dict {param: [values]}.
+    Fixes all other params from base_profile.
+    """
+    if not ranges:
+        return []
+    keys = list(ranges.keys())
+    vals = list(ranges.values())
+    combos = []
+    for combo_vals in itertools.product(*vals):
+        c = {
+            "ngl":          base_profile.get("ngl",          99),
+            "ctx":          str(base_profile.get("ctx",       "8192")),
+            "batch":        base_profile.get("batch",         512),
+            "ubatch":       base_profile.get("ubatch",        512),
+            "flash_attn":   base_profile.get("flash_attn",    False),
+            "cache_type_k": base_profile.get("cache_type_k",  "f16"),
+            "cache_type_v": base_profile.get("cache_type_v",  "f16"),
+            "threads":      base_profile.get("threads",       4),
+            "threads_batch": -1,
+        }
+        for k, v in zip(keys, combo_vals):
+            c[k] = v
+        if int(c.get("ubatch", 512)) > int(c.get("batch", 512)):
+            continue
+        combos.append(c)
+    return combos
 
 
 def sweep_combos(active_keys: list[str], base_profile: dict, hw) -> list[dict]:
@@ -186,14 +266,21 @@ def _parse_bench_json(raw: str) -> tuple[float, float] | None:
 def run_bench_combos(distro: str, user: str, bench_bin: str,
                      model_wsl: str, model_name: str,
                      combos: list[dict],
-                     log_fn: LogFn, done_fn: DoneFn) -> None:
+                     log_fn: LogFn, done_fn: DoneFn,
+                     cancel_evt=None, progress_fn=None) -> None:
     """
     Run llama-bench for each combo sequentially.
-    Calls done_fn(results) when all are done.
+    cancel_evt: threading.Event — set it to abort after current run.
+    progress_fn(i): called after each completed run with the run index (1-based).
+    Calls done_fn(results) when all are done or cancelled.
     Called on a background thread — does NOT call Tk directly.
     """
     results = []
     for i, combo in enumerate(combos):
+        if cancel_evt and cancel_evt.is_set():
+            log_fn(f"[OPT] Cancelled after {i} run(s).", "warn")
+            break
+
         cmd = _bench_cmd(bench_bin, model_wsl, model_name, combo)
         log_fn(f"[OPT] Run {i+1}/{len(combos)}: {combo_summary(combo)}", "info")
         log_fn(f"[OPT] $ {cmd}", None)
@@ -209,28 +296,29 @@ def run_bench_combos(distro: str, user: str, bench_bin: str,
 
         if rc != 0:
             log_fn(f"[OPT] Run {i+1} failed (rc={rc}). Skipping.", "warn")
-            continue
+        else:
+            parsed = _parse_bench_json(raw)
+            if not parsed:
+                log_fn(f"[OPT] Run {i+1}: could not parse JSON output.", "warn")
+            else:
+                pp_tps, tg_tps = parsed
+                row = {
+                    "timestamp":    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                    "pp":           round(pp_tps, 2),
+                    "tg":           round(tg_tps, 2),
+                    "ngl":          combo.get("ngl"),
+                    "ctx":          combo.get("ctx"),
+                    "batch":        combo.get("batch"),
+                    "cache_type_k": combo.get("cache_type_k"),
+                    "cache_type_v": combo.get("cache_type_v"),
+                    "flash_attn":   combo.get("flash_attn", False),
+                    "threads":      combo.get("threads"),
+                }
+                results.append(row)
+                log_fn(f"[OPT] → pp={pp_tps:.1f} t/s  tg={tg_tps:.1f} t/s", "success")
 
-        parsed = _parse_bench_json(raw)
-        if not parsed:
-            log_fn(f"[OPT] Run {i+1}: could not parse JSON output.", "warn")
-            continue
-
-        pp_tps, tg_tps = parsed
-        row = {
-            "timestamp":    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "pp":           round(pp_tps, 2),
-            "tg":           round(tg_tps, 2),
-            "ngl":          combo.get("ngl"),
-            "ctx":          combo.get("ctx"),
-            "batch":        combo.get("batch"),
-            "cache_type_k": combo.get("cache_type_k"),
-            "cache_type_v": combo.get("cache_type_v"),
-            "flash_attn":   combo.get("flash_attn", False),
-            "threads":      combo.get("threads"),
-        }
-        results.append(row)
-        log_fn(f"[OPT] → pp={pp_tps:.1f} t/s  tg={tg_tps:.1f} t/s", "success")
+        if progress_fn:
+            progress_fn(i + 1)
 
     done_fn(results)
 

@@ -742,14 +742,18 @@ canvas.image = photo  # keep reference
 
 | Hash | Date | Summary |
 |------|------|---------|
-| `5823859` | 2026-06-10 | **Initial commit** — V2 working baseline with all tabs, profiles, download manager, CUDA swap |
-| `e8f6bbe` | 2026-06-10 | **Add .gitignore** — exclude `__pycache__`, `crash.log`, bench results |
-| `d0de991` | 2026-06-11 | **Feature batch** — concurrent download queue (max 3), Cancel/Clear Done, live progress/speed, `Have` column, popular model auto-load, click-to-sort, MoE/REAP/MTP/Coder filter checkboxes, Tags column, action buttons moved to left panel Tools section, log toggle stub pane, `--chat-template-file` control, model list default sort by size desc, pane sash restore fix |
-| `98cb1dd` | 2026-06-11 | **Feature batch** — inline chat panel (SSE streaming, vertical split, auto-show on server ready, New Chat, system prompt), Vision/Audio/ImgGen filter checkboxes, REAP niche API query augment, file sizes fixed (`?blobs=true`), llama UI button passes API key, image gen server plan in V2-PLAN.md, `TYPE_CHECKING` annotations on all GUI classes |
-| `5939ac6` | 2026-06-11 | **Debugging tools** — crash log viewer (left panel, red badge), log filter entry (live buffer replay, 3000 cap), Copy Log button; monitor.py: single PowerShell call for Win CPU%+RAM; HealthChecker skip_fn to stop polling when server stopped |
-| `32517d0` | 2026-06-11 | **Hermes + sash fixes** — port V1 Electron detection + CLI launch + UI open; `.gguf` strip on model sync; config auto-detect from `%LOCALAPPDATA%`; fix `url`/`ui_url` key mismatch; add `…` browse buttons to agent editor; fix pane sash persistence (`sashpos()` doesn't exist — use `sash_coord()`/`sash_place()`) |
-| `2d01876` | 2026-06-11 | **Hermes config bootstrap** — create `config.yaml` on first sync if missing; always write `provider: custom` so Hermes uses `base_url` and not a cloud provider fallback |
-| `609e374` | 2026-06-11 | **Hermes auto-detect** — `find_hermes_exe()` / `find_hermes_config()` check standard install paths; agent editor auto-populates blank fields on open; orange install note with URL shown when Hermes not found on disk |
-| `4b9e92f` | 2026-06-11 | **User manual + help** — `USER_MANUAL.md` full end-user doc; `gui/help_window.py` tabbed quick-reference Toplevel (7 sections); Help menu bar with Quick Reference, Re-run Setup Wizard, About |
-| `eb7fc65` | 2026-06-11 | **Rename to LlamaForge** — window title, About dialog, USER_MANUAL.md |
-| `74c792b` | 2026-06-11 | **Repo URL** — set to github.com/Aiesus/LlamaForge |
+| `806c3c4` | 2026-06-10 | **Initial commit** — V2 working baseline with all tabs, profiles, download manager, CUDA swap |
+| `52df659` | 2026-06-10 | **Add .gitignore** — exclude `__pycache__`, `crash.log`, bench results |
+| `b9f6348` | 2026-06-11 | **Feature batch** — concurrent download queue (max 3), Cancel/Clear Done, live progress/speed, `Have` column, popular model auto-load, click-to-sort, MoE/REAP/MTP/Coder filter checkboxes, Tags column, action buttons moved to left panel Tools section, log toggle stub pane, `--chat-template-file` control, model list default sort by size desc, pane sash restore fix |
+| `db7ea22` | 2026-06-11 | **Feature batch** — inline chat panel (SSE streaming, vertical split, auto-show on server ready, New Chat, system prompt), Vision/Audio/ImgGen filter checkboxes, REAP niche API query augment, file sizes fixed (`?blobs=true`), llama UI button passes API key, image gen server plan in V2-PLAN.md, `TYPE_CHECKING` annotations on all GUI classes |
+| `47240ac` | 2026-06-11 | **Debugging tools** — crash log viewer (left panel, red badge), log filter entry (live buffer replay, 3000 cap), Copy Log button; monitor.py: single PowerShell call for Win CPU%+RAM; HealthChecker skip_fn to stop polling when server stopped |
+| `9d1d747` | 2026-06-11 | **Hermes + sash fixes** — port V1 Electron detection + CLI launch + UI open; `.gguf` strip on model sync; config auto-detect from `%LOCALAPPDATA%`; fix `url`/`ui_url` key mismatch; add `…` browse buttons to agent editor; fix pane sash persistence (`sashpos()` doesn't exist — use `sash_coord()`/`sash_place()`) |
+| `6eea2ae` | 2026-06-11 | **Hermes config bootstrap** — create `config.yaml` on first sync if missing; always write `provider: custom` so Hermes uses `base_url` and not a cloud provider fallback |
+| `cabff03` | 2026-06-11 | **Hermes auto-detect** — `find_hermes_exe()` / `find_hermes_config()` check standard install paths; agent editor auto-populates blank fields on open; orange install note with URL shown when Hermes not found on disk |
+| `456c7ca` | 2026-06-11 | **User manual + help** — `USER_MANUAL.md` full end-user doc; `gui/help_window.py` tabbed quick-reference Toplevel (7 sections); Help menu bar with Quick Reference, Re-run Setup Wizard, About |
+| `56c92ff` | 2026-06-11 | **Rename to LlamaForge** — window title, About dialog, USER_MANUAL.md |
+| `70f2f7f` | 2026-06-11 | **Repo URL** — set to github.com/Aiesus/LlamaForge |
+| `952689c` | 2026-06-11 | **README** — GitHub front page with badges, feature list, architecture diagram, project structure |
+| `26df5fe` | 2026-06-11 | **Background monitor** — `check_running_by_name()` polls tasklist every 3s; agents show RUNNING even when started outside GUI |
+| `e72f7f8` | 2026-06-12 | **Security** — remove `settings.json`, `profiles.json`, `agents.json` from tracking; add to `.gitignore`; rewrite full git history to scrub personal data and exposed API key |
+| `a292a2e` | 2026-06-12 | **Cleanup** — untrack `__pycache__` dirs; fix download manager quant label ("full" not "—") and empty-state message |

@@ -348,7 +348,10 @@ class LeftPanel:
     def _on_model_select(self, event=None) -> None:
         sel = self._model_tree.selection()
         if sel:
-            self._state.model_var.set(sel[0])  # iid IS the filename
+            fname = sel[0]
+            self._state.model_var.set(fname)
+            size_b = self._model_sizes.get(fname, 0)
+            self._state.model_size_gb = size_b / 1e9 if size_b else 0.0
 
     # ── Search placeholder ────────────────────────────────────────────────────
 

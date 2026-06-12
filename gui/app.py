@@ -61,6 +61,7 @@ class AppState:
         self.hermes_process: subprocess.Popen | None = None
         self._scroll_paused  = False
         self._rebuilding     = False
+        self.model_size_gb: float = 0.0   # updated by LeftPanel on model select
 
         # ── Server / Model vars ────────────────────────────────────────────────
         self.model_var              = tk.StringVar()
