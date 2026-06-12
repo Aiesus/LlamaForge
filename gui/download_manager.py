@@ -440,7 +440,7 @@ class DownloadManager(tk.Toplevel):
         threading.Thread(target=self._fetch_repos, daemon=True).start()
 
     def _hf_fetch(self, search: str | None, limit: int = 200) -> list[dict]:
-        """Single HF API request. Returns list of repo dicts (may be empty on error)."""
+        """Single HF API request. Returns list of repo dicts (empty on error)."""
         params: dict = {"tags": "gguf", "sort": "downloads", "direction": "-1",
                         "limit": str(limit)}
         if search:
@@ -457,46 +457,49 @@ class DownloadManager(tk.Toplevel):
         base = self._browse_q_var.get().strip()
         bl   = base.lower()
 
-        # Each flag maps to the HF search term that surfaces its models.
-        FLAG_TERMS = [
-            (self._moe_only_var,    "MoE"),
-            (self._reap_only_var,   "REAP"),
-            (self._mtp_only_var,    "MTP"),
-            (self._coder_only_var,  "coder"),
-            (self._vision_only_var, "VL"),
-            (self._audio_only_var,  "speech"),
-            (self._imggen_only_var, "flux"),
+        # Each flag: (var, HF search term, client-side predicate)
+        FLAG_DATA = [
+            (self._moe_only_var,    "MoE",    lambda r: _is_moe(r.get("modelId", ""))),
+            (self._reap_only_var,   "REAP",   lambda r: _is_reap(r.get("modelId", ""))),
+            (self._mtp_only_var,    "MTP",    lambda r: _is_mtp(r.get("modelId", ""))),
+            (self._coder_only_var,  "coder",  lambda r: _is_coder(r.get("modelId", ""))),
+            (self._vision_only_var, "VL",     lambda r: _is_vision(r.get("modelId", ""), r.get("tags", ()))),
+            (self._audio_only_var,  "speech", lambda r: _is_audio(r.get("modelId", ""), r.get("tags", ()))),
+            (self._imggen_only_var, "flux",   lambda r: _is_imggen(r.get("modelId", ""), r.get("tags", ()))),
         ]
-        active_terms = [t for var, t in FLAG_TERMS if var.get()]
+        active = [(term, pred) for var, term, pred in FLAG_DATA if var.get()]
 
         try:
-            if not active_terms:
-                # No flags — plain search or top downloads
+            if not active:
+                # No flags — plain text search or top downloads
                 self._browse_repos = self._hf_fetch(base or None, limit=40)
 
-            elif len(active_terms) == 1:
-                # Single flag: one request, combine with base query
-                term = active_terms[0]
-                query = " ".join(filter(None, [base, term if term.lower() not in bl else ""]))
-                self._browse_repos = self._hf_fetch(query or None, limit=200)
+            elif len(active) == 1:
+                # Single flag: fetch with flag search term, apply client-side predicate
+                term, pred = active[0]
+                q = " ".join(filter(None, [base, term if term.lower() not in bl else ""]))
+                raw = self._hf_fetch(q or None, limit=500)
+                self._browse_repos = [r for r in raw if pred(r)]
 
             else:
-                # Multiple flags: one request per flag, intersect by model ID.
-                # Each fetch gets its own 200-result pool so the intersection
-                # contains models that genuinely satisfy every flag.
-                results_by_flag: list[list[dict]] = []
-                repo_map: dict[str, dict] = {}
-                for term in active_terms:
-                    query = " ".join(filter(None, [base, term if term.lower() not in bl else ""]))
-                    repos = self._hf_fetch(query or None, limit=200)
-                    results_by_flag.append(repos)
-                    for r in repos:
-                        repo_map[r.get("modelId", "")] = r
+                # Multiple flags: per-flag fetch + client-side filter, then AND-intersect.
+                # Each flag gets its own 500-result pool so every flag is independently
+                # saturated before the intersection is computed.
+                filtered_sets: list[dict[str, dict]] = []
+                n_flags = len(active)
+                for i, (term, pred) in enumerate(active):
+                    self.after(0, lambda t=term, idx=i: self._browse_status.config(
+                        text=f"Fetching {t} results ({idx+1}/{n_flags})…"))
+                    q = " ".join(filter(None, [base, term if term.lower() not in bl else ""]))
+                    raw = self._hf_fetch(q or None, limit=500)
+                    matched = {r["modelId"]: r for r in raw if pred(r)}
+                    filtered_sets.append(matched)
 
-                # AND: keep only IDs present in every flag's result set
-                id_sets = [set(r.get("modelId", "") for r in lst) for lst in results_by_flag]
-                common  = id_sets[0].intersection(*id_sets[1:])
-                self._browse_repos = [repo_map[mid] for mid in common if mid in repo_map]
+                # Intersect: keep only model IDs present in every flag's filtered set
+                common_ids = set(filtered_sets[0].keys())
+                for fs in filtered_sets[1:]:
+                    common_ids &= set(fs.keys())
+                self._browse_repos = [filtered_sets[0][mid] for mid in common_ids]
 
             self.after(0, self._browse_populate_repos)
         except Exception as e:
@@ -558,9 +561,20 @@ class DownloadManager(tk.Toplevel):
             updated = _fmt_date(r.get("lastModified", ""))
             self._repo_tree.insert("", tk.END, iid=mid,
                                    values=(_clean_model_name(mid), pub, dl, tags, updated))
-        label = ("Top GGUF models by downloads"
-                 if not self._browse_q_var.get().strip()
-                 else f"{len(repos)} model(s) found")
+        active_flags = sum([
+            self._moe_only_var.get(), self._reap_only_var.get(),
+            self._mtp_only_var.get(), self._coder_only_var.get(),
+            self._vision_only_var.get(), self._audio_only_var.get(),
+            self._imggen_only_var.get(),
+        ])
+        if len(repos) == 0 and active_flags > 1:
+            label = "No models match ALL selected filters — try fewer filters"
+        elif len(repos) == 0:
+            label = "No models found"
+        elif not self._browse_q_var.get().strip() and active_flags == 0:
+            label = "Top GGUF models by downloads"
+        else:
+            label = f"{len(repos)} model(s) found"
         self._browse_status.config(text=f"{label} — select one to see variants.")
 
     def _browse_apply_filter(self) -> None:
