@@ -27,7 +27,7 @@ _QUANT_RE = re.compile(
     r'\b(IQ[0-9]+_[A-Z0-9]+|Q[0-9]+_K_[SML]|Q[0-9]+_K|Q[0-9]+_[0-9]+|Q[0-9]+|F16|BF16)\b',
     re.IGNORECASE,
 )
-_MOE_RE   = re.compile(r'\b(moe|mixture)\b|-A\d+B\b', re.IGNORECASE)
+_MOE_RE   = re.compile(r'\b(moe|mixture|mixtral)\b|-A\d+B\b|\d+x\d+B\b', re.IGNORECASE)
 _REAP_RE  = re.compile(r'\bREAP\b', re.IGNORECASE)
 _MTP_RE   = re.compile(r'\bMTP\b',  re.IGNORECASE)
 _CODER_RE = re.compile(r'\b(coder|coding|codestral|codegen)\b', re.IGNORECASE)
@@ -445,6 +445,7 @@ class DownloadManager(tk.Toplevel):
         base = self._browse_q_var.get().strip()
         extra: list[str] = []
         bl = base.lower()
+        if self._moe_only_var.get()    and "moe" not in bl:    extra.append("MoE")
         if self._reap_only_var.get()   and "reap"   not in bl: extra.append("REAP")
         if self._mtp_only_var.get()    and "mtp"    not in bl: extra.append("MTP")
         if self._coder_only_var.get()  and "coder"  not in bl: extra.append("coder")
@@ -462,7 +463,7 @@ class DownloadManager(tk.Toplevel):
             self._vision_only_var.get(), self._audio_only_var.get(),
             self._imggen_only_var.get(),
         ])
-        limit = "100" if any_filter else "40"
+        limit = "200" if any_filter else "40"
 
         params: dict = {"tags": "gguf", "sort": "downloads", "direction": "-1", "limit": limit}
         if effective:
