@@ -439,41 +439,65 @@ class DownloadManager(tk.Toplevel):
         self._browse_files = []
         threading.Thread(target=self._fetch_repos, daemon=True).start()
 
-    def _fetch_repos(self) -> None:
-        # Build effective query: user text + active niche-filter terms.
-        # Without this, REAP/MTP/vision/audio models don't appear in top-N downloads.
-        base = self._browse_q_var.get().strip()
-        extra: list[str] = []
-        bl = base.lower()
-        if self._moe_only_var.get()    and "moe" not in bl:    extra.append("MoE")
-        if self._reap_only_var.get()   and "reap"   not in bl: extra.append("REAP")
-        if self._mtp_only_var.get()    and "mtp"    not in bl: extra.append("MTP")
-        if self._coder_only_var.get()  and "coder"  not in bl: extra.append("coder")
-        if self._vision_only_var.get() and "vision" not in bl and "vl" not in bl:
-            extra.append("VL")
-        if self._audio_only_var.get()  and "speech" not in bl and "whisper" not in bl:
-            extra.append("speech")
-        if self._imggen_only_var.get() and "flux" not in bl and "diffusion" not in bl:
-            extra.append("flux")
-        effective = " ".join(filter(None, [base] + extra))
-
-        any_filter = any([
-            self._moe_only_var.get(),    self._reap_only_var.get(),
-            self._mtp_only_var.get(),    self._coder_only_var.get(),
-            self._vision_only_var.get(), self._audio_only_var.get(),
-            self._imggen_only_var.get(),
-        ])
-        limit = "200" if any_filter else "40"
-
-        params: dict = {"tags": "gguf", "sort": "downloads", "direction": "-1", "limit": limit}
-        if effective:
-            params["search"] = effective
-
+    def _hf_fetch(self, search: str | None, limit: int = 200) -> list[dict]:
+        """Single HF API request. Returns list of repo dicts (may be empty on error)."""
+        params: dict = {"tags": "gguf", "sort": "downloads", "direction": "-1",
+                        "limit": str(limit)}
+        if search:
+            params["search"] = search
         url = f"https://huggingface.co/api/models?{urllib.parse.urlencode(params)}"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "llama-gui/2"})
+            req = urllib.request.Request(url, headers={"User-Agent": "LlamaForge/2"})
             with urllib.request.urlopen(req, timeout=20) as resp:
-                self._browse_repos = json.loads(resp.read())
+                return json.loads(resp.read())
+        except Exception:
+            return []
+
+    def _fetch_repos(self) -> None:
+        base = self._browse_q_var.get().strip()
+        bl   = base.lower()
+
+        # Each flag maps to the HF search term that surfaces its models.
+        FLAG_TERMS = [
+            (self._moe_only_var,    "MoE"),
+            (self._reap_only_var,   "REAP"),
+            (self._mtp_only_var,    "MTP"),
+            (self._coder_only_var,  "coder"),
+            (self._vision_only_var, "VL"),
+            (self._audio_only_var,  "speech"),
+            (self._imggen_only_var, "flux"),
+        ]
+        active_terms = [t for var, t in FLAG_TERMS if var.get()]
+
+        try:
+            if not active_terms:
+                # No flags — plain search or top downloads
+                self._browse_repos = self._hf_fetch(base or None, limit=40)
+
+            elif len(active_terms) == 1:
+                # Single flag: one request, combine with base query
+                term = active_terms[0]
+                query = " ".join(filter(None, [base, term if term.lower() not in bl else ""]))
+                self._browse_repos = self._hf_fetch(query or None, limit=200)
+
+            else:
+                # Multiple flags: one request per flag, intersect by model ID.
+                # Each fetch gets its own 200-result pool so the intersection
+                # contains models that genuinely satisfy every flag.
+                results_by_flag: list[list[dict]] = []
+                repo_map: dict[str, dict] = {}
+                for term in active_terms:
+                    query = " ".join(filter(None, [base, term if term.lower() not in bl else ""]))
+                    repos = self._hf_fetch(query or None, limit=200)
+                    results_by_flag.append(repos)
+                    for r in repos:
+                        repo_map[r.get("modelId", "")] = r
+
+                # AND: keep only IDs present in every flag's result set
+                id_sets = [set(r.get("modelId", "") for r in lst) for lst in results_by_flag]
+                common  = id_sets[0].intersection(*id_sets[1:])
+                self._browse_repos = [repo_map[mid] for mid in common if mid in repo_map]
+
             self.after(0, self._browse_populate_repos)
         except Exception as e:
             self.after(0, lambda: self._browse_status.config(text=f"Error: {e}"))
