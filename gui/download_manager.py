@@ -495,21 +495,23 @@ class DownloadManager(tk.Toplevel):
     def _browse_populate_repos(self) -> None:
         repos = list(self._browse_repos)
 
-        # OR-logic filters — a model passes if it matches ANY checked box
+        # AND-logic filters — each checked box narrows the list further
         mid_fn  = lambda r: r.get("modelId", "")
         tags_fn = lambda r: r.get("tags", ())
-        checks = [
-            (self._moe_only_var,    lambda r: _is_moe(mid_fn(r))),
-            (self._reap_only_var,   lambda r: _is_reap(mid_fn(r))),
-            (self._mtp_only_var,    lambda r: _is_mtp(mid_fn(r))),
-            (self._coder_only_var,  lambda r: _is_coder(mid_fn(r))),
-            (self._vision_only_var, lambda r: _is_vision(mid_fn(r), tags_fn(r))),
-            (self._audio_only_var,  lambda r: _is_audio(mid_fn(r), tags_fn(r))),
-            (self._imggen_only_var, lambda r: _is_imggen(mid_fn(r), tags_fn(r))),
-        ]
-        active = [(var, fn) for var, fn in checks if var.get()]
-        if active:
-            repos = [r for r in repos if any(fn(r) for _, fn in active)]
+        if self._moe_only_var.get():
+            repos = [r for r in repos if _is_moe(mid_fn(r))]
+        if self._reap_only_var.get():
+            repos = [r for r in repos if _is_reap(mid_fn(r))]
+        if self._mtp_only_var.get():
+            repos = [r for r in repos if _is_mtp(mid_fn(r))]
+        if self._coder_only_var.get():
+            repos = [r for r in repos if _is_coder(mid_fn(r))]
+        if self._vision_only_var.get():
+            repos = [r for r in repos if _is_vision(mid_fn(r), tags_fn(r))]
+        if self._audio_only_var.get():
+            repos = [r for r in repos if _is_audio(mid_fn(r), tags_fn(r))]
+        if self._imggen_only_var.get():
+            repos = [r for r in repos if _is_imggen(mid_fn(r), tags_fn(r))]
 
         sort_col, reverse = self._repo_sort
         key_fn = self._REPO_SORT_KEY.get(sort_col, self._REPO_SORT_KEY["downloads"])
