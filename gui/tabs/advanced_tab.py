@@ -190,9 +190,17 @@ class AdvancedTab:
         self._wsl_cur_label.config(text=f"current: {mem}")
         try:
             subprocess.run(["wsl.exe", "--shutdown"], check=True, timeout=15)
-            self._log("[WSL] WSL shut down. Start it again normally — new limit is active.", "success")
         except Exception as e:
             self._log(f"[WSL] wsl.exe --shutdown failed: {e}  — restart WSL manually.", "warn")
+            return
+        self._log("[WSL] WSL stopped. Restarting with new limit…", "info")
+        distro = self._state.settings.wsl_distro or ""
+        cmd = ["wsl.exe", "-d", distro, "--", "true"] if distro else ["wsl.exe", "--", "true"]
+        try:
+            subprocess.run(cmd, check=True, timeout=20)
+            self._log(f"[WSL] WSL restarted — memory limit is now {mem}.", "success")
+        except Exception as e:
+            self._log(f"[WSL] WSL restart failed: {e}  — start a WSL terminal to bring it back up.", "warn")
 
     def _refresh_preview(self) -> None:
         try:
