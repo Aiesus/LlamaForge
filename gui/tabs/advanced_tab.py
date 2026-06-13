@@ -65,12 +65,14 @@ class AdvancedTab:
         sd = tk.Frame(sf, bg=sf.cget("bg"))
         sd.pack(fill="x", padx=12, pady=4)
 
-        cbk(sd, "--speculative-decode-max-model-draft  (MTP)", self._state.spec_mtp_var,
-            "Enable Multi-Token Prediction speculative decoding (DeepSeek-style). "
-            "Requires a model with MTP heads. Boosts TPS significantly on such models.")
-        flag_row(sd, "--draft-max  (max draft tokens)", self._state.spec_draft_n_en_var,
+        cbk(sd, "--spec-type draft-mtp", self._state.spec_mtp_var,
+            "Enable Multi-Token Prediction speculative decoding (DeepSeek / Qwen MTP models). "
+            "Requires a model with built-in MTP heads — no separate draft model needed. "
+            "Use --draft-max below to set how many tokens to draft per step.")
+        flag_row(sd, "--draft-max  (tokens per draft step)", self._state.spec_draft_n_en_var,
                  self._state.spec_draft_n_var, "entry",
-                 "Number of speculative tokens to draft per step. 2-4 typical.",
+                 "How many tokens to speculatively draft per step when --spec-type draft-mtp is on. "
+                 "2–4 is typical; higher values help on fast GPUs.",
                  val_width=3)
         flag_row(sd, "--draft-prio (draft thread priority)", self._state.prio_draft_en_var,
                  self._state.prio_draft_level_var, "combo",
