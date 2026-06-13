@@ -136,8 +136,8 @@ class AppSettings:
     last_model:     str  = ""
     last_profile:   str  = ""
 
-    # WSL memory cap (written to ~/.wslconfig)
-    wsl_memory:     str  = "6GB"
+    # WSL memory cap (written to ~/.wslconfig); empty = not yet configured
+    wsl_memory:     str  = ""
 
     # Swap CUDA device order: sets CUDA_VISIBLE_DEVICES=1,0 before llama-server.
     # Useful when GPU 1 is larger and should be the primary compute device.

@@ -332,14 +332,14 @@ def read_wsl_memory() -> str:
 
 
 def write_wsl_memory(mem: str) -> None:
-    """Write memory={mem} to ~/.wslconfig [wsl2] section."""
-    lines = []
+    """Write memory={mem} to ~/.wslconfig [wsl2] section. Raises on failure."""
+    lines: list[str] = []
     if WSLCONFIG.exists():
         lines = WSLCONFIG.read_text(encoding="utf-8").splitlines()
 
-    in_wsl2 = False
+    in_wsl2    = False
     mem_written = False
-    new_lines = []
+    new_lines: list[str] = []
 
     for line in lines:
         stripped = line.strip().lower()
@@ -364,3 +364,7 @@ def write_wsl_memory(mem: str) -> None:
         new_lines.append(f"memory={mem}")
 
     WSLCONFIG.write_text("\r\n".join(new_lines) + "\r\n", encoding="utf-8")
+
+    # Verify the write landed
+    if read_wsl_memory() != mem:
+        raise RuntimeError(f"Wrote {WSLCONFIG} but read back a different value — check file permissions.")

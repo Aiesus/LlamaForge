@@ -1,7 +1,8 @@
 """Advanced tab — RoPE, performance flags, speculative decoding, WSL, misc."""
 from __future__ import annotations
+import subprocess
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -91,14 +92,23 @@ class AdvancedTab:
         tk.Entry(wf, textvariable=self._state.wsl_memory_var, width=8,
                  bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
                  font=("Consolas", 10), insertbackground=T["fg"]).pack(side="left")
-        tk.Label(wf, text='e.g. "64GB"', bg=g2.cget("bg"),
-                 fg=T["fg2"], font=("Segoe UI", 8)).pack(side="left", padx=6)
+        self._wsl_cur_label = tk.Label(wf, text="", bg=g2.cget("bg"),
+                                       fg=T["fg2"], font=("Segoe UI", 8))
+        self._wsl_cur_label.pack(side="left", padx=6)
 
-        from core.wsl import write_wsl_memory
-        tk.Button(g2, text="Apply (restarts WSL)", bg=T["btn"], fg=T["btn_fg"],
+        tk.Button(g2, text="Apply & Restart WSL", bg=T["btn"], fg=T["btn_fg"],
                   relief="flat", cursor="hand2", font=("Segoe UI", 9),
                   command=self._apply_wsl_memory
                   ).grid(row=1, column=1, sticky="w", pady=(2, 4))
+
+        # Seed entry from actual .wslconfig, not the stored setting default
+        from core.wsl import read_wsl_memory
+        actual = read_wsl_memory()
+        if actual != "not set":
+            self._state.wsl_memory_var.set(actual)
+            self._wsl_cur_label.config(text=f'current: {actual}')
+        else:
+            self._wsl_cur_label.config(text='not set in .wslconfig')
 
         sep(sf, T)
 
@@ -160,8 +170,29 @@ class AdvancedTab:
     def _apply_wsl_memory(self) -> None:
         from core.wsl import write_wsl_memory
         mem = self._state.wsl_memory_var.get().strip()
-        write_wsl_memory(mem)
-        self._log(f"[WSL] Memory limit set to {mem}. Restart WSL for it to take effect.", "info")
+        if not mem:
+            self._log("[WSL] Enter a value first (e.g. 48GB).", "warn")
+            return
+        ok = messagebox.askyesno(
+            "Restart WSL?",
+            f"Set WSL memory limit to {mem} and run  wsl --shutdown ?\n\n"
+            "This will terminate llama-server and all other WSL processes.",
+            icon="warning",
+        )
+        if not ok:
+            return
+        try:
+            write_wsl_memory(mem)
+        except Exception as e:
+            self._log(f"[WSL] Failed to write .wslconfig: {e}", "error")
+            return
+        self._log(f"[WSL] .wslconfig updated — memory={mem}. Shutting down WSL…", "info")
+        self._wsl_cur_label.config(text=f"current: {mem}")
+        try:
+            subprocess.run(["wsl.exe", "--shutdown"], check=True, timeout=15)
+            self._log("[WSL] WSL shut down. Start it again normally — new limit is active.", "success")
+        except Exception as e:
+            self._log(f"[WSL] wsl.exe --shutdown failed: {e}  — restart WSL manually.", "warn")
 
     def _refresh_preview(self) -> None:
         try:
