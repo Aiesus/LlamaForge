@@ -144,7 +144,7 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
     if not p.get("slots_endpoint", True):
         parts.append("--no-slots")
     if p.get("flash_attn"):
-        parts.append("--flash-attn")
+        parts.append("--flash-attn on")
     if p.get("mlock"):
         parts.append("--mlock")
     if p.get("no_mmap"):
