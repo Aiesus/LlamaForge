@@ -21,6 +21,10 @@ from gui.widgets   import ToolTip
 
 LogFn = Callable[[str, str | None], None]
 
+# Hide non-model .gguf files (vocab / tokenizer / test files, a few MB) from the
+# model dropdown. Real models are well above this; bump if you ever load a tiny one.
+_MIN_MODEL_BYTES = 500 * 1024 ** 2   # 500 MB
+
 # ── Filename parser ───────────────────────────────────────────────────────────
 
 _QUANT_RE  = re.compile(
@@ -136,8 +140,9 @@ class LeftPanel:
                 self._server_btn.config(text="■ Unload", bg=T["red"],
                                         fg=T["bg"], state="normal")
             elif state == "loading":
-                self._server_btn.config(text="⏳ …", bg=T["yellow"],
-                                        fg=T["bg"], state="disabled")
+                # Clickable so the user can cancel a load in progress.
+                self._server_btn.config(text="✕ Stop", bg=T["orange"],
+                                        fg=T["bg"], state="normal")
             else:  # stopped / error / crashed / unknown
                 self._server_btn.config(text="▶ Load", bg=T["green"],
                                         fg=T["bg"], state="normal")
@@ -176,6 +181,11 @@ class LeftPanel:
             btn_row, text="⊞ Libraries", bg=T["btn"], fg=T["btn_fg"],
             relief="flat", cursor="hand2", font=("Segoe UI", 9),
             command=self._open_library_manager,
+        ).pack(side="left", expand=True, fill="x", padx=2)
+        tk.Button(
+            btn_row, text="⬇ Download", bg=T["btn"], fg=T["accent"],
+            relief="flat", cursor="hand2", font=("Segoe UI", 9, "bold"),
+            command=self._open_downloader,
         ).pack(side="left", expand=True, fill="x", padx=(2, 0))
 
         # Queue-based scan result delivery — safe for background threads on Windows.
@@ -300,14 +310,19 @@ class LeftPanel:
                         for entry in it:
                             if not entry.name.lower().endswith(".gguf"):
                                 continue
+                            try:
+                                sz = entry.stat().st_size
+                            except Exception:
+                                sz = -1   # unknown — keep it
+                            # Skip non-model .gguf files (vocab/tokenizer/test
+                            # files are a few MB); real models are >= the floor.
+                            if 0 <= sz < _MIN_MODEL_BYTES:
+                                continue
                             full_wsl = f"{lib_wsl}/{entry.name}"
                             all_models.append(full_wsl)
                             model_meta[full_wsl]    = _parse_gguf(entry.name)
                             model_lib_map[full_wsl] = lib_wsl
-                            try:
-                                model_sizes[full_wsl] = entry.stat().st_size
-                            except Exception:
-                                model_sizes[full_wsl] = 0
+                            model_sizes[full_wsl]   = max(sz, 0)
                 except Exception as e:
                     self._log(f"[WARN] Cannot scan {lib_wsl}: {e}", "warn")
 
@@ -399,7 +414,8 @@ class LeftPanel:
 
     def _toggle_server(self) -> None:
         ctrl = self._state.server_ctrl
-        if ctrl and ctrl.state == ServerState.RUNNING:
+        # Running → unload; loading → cancel the in-progress load; else → load.
+        if ctrl and ctrl.state in (ServerState.RUNNING, ServerState.LOADING):
             self._unload_model()
         else:
             self._load_model()
@@ -462,7 +478,7 @@ class LeftPanel:
                 self._refresh_profile_list()
                 self._log(f"[PROFILE] Deleted: {name}", "warn")
 
-    # ── Tools row: Download + utility icons ────────────────────────────────────
+    # ── Tools row: utility icons ───────────────────────────────────────────────
 
     def _build_tools_row(self) -> None:
         T = self._T
@@ -471,14 +487,6 @@ class LeftPanel:
 
         row = tk.Frame(self._ctrl_col, bg=T["bg2"])
         row.pack(fill="x", padx=8, pady=(2, 8))
-
-        dl_btn = tk.Button(
-            row, text="⬇ Download", bg=T["btn"], fg=T["accent"], relief="flat",
-            cursor="hand2", font=("Segoe UI", 9, "bold"), pady=4, padx=8,
-            command=self._open_downloader,
-        )
-        dl_btn.pack(side="left", padx=(0, 6))
-        ToolTip(dl_btn, "Download models from Hugging Face")
 
         def _icon(text, fg, cmd, tip, bg=None):
             b = tk.Button(row, text=text, bg=bg or T["btn"], fg=fg,

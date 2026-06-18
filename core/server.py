@@ -218,6 +218,35 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
     return " ".join(parts)
 
 
+# ── Log persistence + classification ──────────────────────────────────────────
+
+# llama-server stdout/stderr is tee'd here so the log survives a GUI restart and
+# can be re-attached (tailed) by a later GUI instance.
+SERVER_LOG = "/tmp/llama-gui-server.log"
+
+_LOG_SUPPRESS = (
+    "failed to mount", "see dmesg", "all tasks already finished",
+    "stop: all tasks", "/api/v1/models", "/api/tags", "/v1/props",
+    "log_server_r",
+)
+
+
+def classify_log_line(line: str) -> tuple[bool, str | None]:
+    """Return (keep, tag) for a server log line. keep=False → suppress it."""
+    if any(s in line for s in _LOG_SUPPRESS):
+        return False, None
+    low = line.lower()
+    if "error" in low or "failed" in low or "exception" in low:
+        return True, "error"
+    if "loaded" in low or "cuda" in low or "ggml_cuda" in low:
+        return True, "success"
+    if "warn" in low:
+        return True, "warn"
+    if any(k in low for k in ("llama_model_load", "llm_load", "ggml", "layer")):
+        return True, "info"
+    return True, None
+
+
 # ── Server controller ─────────────────────────────────────────────────────────
 
 class ServerController:
@@ -253,7 +282,11 @@ class ServerController:
         self.stop(silent=True)
         time.sleep(0.4)
 
-        full_cmd = f'wsl -d {self._distro} -u {self._user} bash -c "{inner_cmd}"'
+        # Tee to a logfile so the output survives this GUI process (a later GUI
+        # instance can tail it to re-attach). tee passes through to our pipe, so
+        # live streaming + ready/t-s detection below are unaffected.
+        payload  = f"{inner_cmd} 2>&1 | tee {SERVER_LOG}"
+        full_cmd = f'wsl -d {self._distro} -u {self._user} bash -c "{payload}"'
         self._log(f"\n[LOAD] Starting: {model_name}", "info")
         self._log(f"[CMD]  {inner_cmd}", "info")
         self._set_state(ServerState.LOADING, model_name)
@@ -307,32 +340,24 @@ class ServerController:
         if self._status_fn:
             self._status_fn(state.value, model)
 
+    def adopt(self, model_name: str) -> None:
+        """Mark an already-running (externally launched) server as ours, so the
+        UI shows Running / Unload and health polling resumes. Does not own a
+        process — stop() still works via pkill."""
+        self._log("[INFO] Adopted already-running llama-server.", "info")
+        self._set_state(ServerState.RUNNING, model_name)
+
     def _stream_log(self, model_name: str) -> None:
         if not self.process:
             return
-        _suppress = (
-            "failed to mount", "see dmesg", "all tasks already finished",
-            "stop: all tasks", "/api/v1/models", "/api/tags", "/v1/props",
-            "log_server_r",
-        )
         try:
             for line in self.process.stdout:
                 line = line.rstrip()
                 if not line:
                     continue
-                if any(s in line for s in _suppress):
+                keep, tag = classify_log_line(line)
+                if not keep:
                     continue
-                low = line.lower()
-                if "error" in low or "failed" in low or "exception" in low:
-                    tag = "error"
-                elif "loaded" in low or "cuda" in low or "ggml_cuda" in low:
-                    tag = "success"
-                elif "warn" in low:
-                    tag = "warn"
-                elif any(k in low for k in ("llama_model_load", "llm_load", "ggml", "layer")):
-                    tag = "info"
-                else:
-                    tag = None
                 self._log(line, tag)
 
                 # Parse tokens/sec from generation completion lines

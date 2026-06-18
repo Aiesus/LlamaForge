@@ -344,6 +344,11 @@ class LlamaApp:
             pass
 
         self.root.geometry(settings.geometry or "1380x860")
+        # Open maximized; geometry above is the size when the user un-maximizes.
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            pass
 
         self.state = AppState(
             root     = self.root,
@@ -610,6 +615,7 @@ class LlamaApp:
 
     def _start_services(self):
         s = self.state.settings
+        self._log_tail_proc = None
 
         # Hardware detection (async — doesn't block UI)
         def _hw():
@@ -675,6 +681,35 @@ class LlamaApp:
         if last and last in self.state.profiles:
             self.state.apply_profile_dict(self.state.profiles[last])
 
+        # Adopt an already-running server (e.g. GUI was restarted while a model
+        # stayed loaded) so the live log re-attaches instead of showing nothing.
+        threading.Thread(target=self._adopt_running_server, daemon=True).start()
+
+    def _adopt_running_server(self) -> None:
+        import subprocess, os
+        s = self.state.settings
+        try:
+            r = subprocess.run(
+                ["wsl", "-d", s.wsl_distro, "-u", s.wsl_user,
+                 "pgrep", "-af", "build/bin/llama-server"],
+                capture_output=True, text=True, timeout=10)
+        except Exception:
+            return
+        line = (r.stdout or "").strip().splitlines()
+        if not line:
+            return
+        cmd = line[0]
+        # model basename from the `-m <path>` arg, else last_model
+        model = ""
+        if " -m " in cmd:
+            after = cmd.split(" -m ", 1)[1]
+            model = os.path.basename(after.split(" --", 1)[0].strip().strip("'\""))
+        if not model:
+            model = os.path.basename(s.last_model)
+        ctrl = self.state.server_ctrl
+        if ctrl is not None and ctrl.state == ServerState.STOPPED:
+            self._safe_after(lambda: ctrl.adopt(model or "running server"))
+
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _on_tps(self, tps: float) -> None:
@@ -696,6 +731,45 @@ class LlamaApp:
             self._safe_after(lambda: self.left_panel.update_server_status(state))
         if hasattr(self, "chat_panel") and state in ("stopped", "error", "crashed"):
             self._safe_after(lambda: self.chat_panel.set_connected(False))
+
+        # Live-log tail for an *adopted* server (one we didn't launch — it has no
+        # pipe). Self-launched servers (process != None) use the pipe stream.
+        ctrl = self.state.server_ctrl
+        if state == "running" and ctrl is not None and ctrl.process is None:
+            self._safe_after(self._start_log_tail)
+        elif state in ("loading", "stopped", "error", "crashed"):
+            self._safe_after(self._stop_log_tail)
+
+    def _start_log_tail(self) -> None:
+        if getattr(self, "_log_tail_proc", None) is not None:
+            return
+        from core.wsl    import stream_async
+        from core.server import SERVER_LOG, classify_log_line
+        s = self.state.settings
+
+        def _on_line(line: str, _sev=None) -> None:
+            line = line.rstrip()
+            if not line:
+                return
+            keep, tag = classify_log_line(line)
+            if keep:
+                self._log(line, tag)
+
+        self._log("[INFO] Re-attaching to running server log…", "info")
+        stream_async(
+            s.wsl_distro, s.wsl_user, f"tail -n 500 -F {SERVER_LOG} 2>/dev/null",
+            _on_line, timeout=10**9,
+            on_proc=lambda p: setattr(self, "_log_tail_proc", p),
+        )
+
+    def _stop_log_tail(self) -> None:
+        proc = getattr(self, "_log_tail_proc", None)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            self._log_tail_proc = None
 
     def _on_server_ready(self) -> None:
         from core import agents as agents_core

@@ -48,24 +48,28 @@ class Header:
         )
         self._tps_label.pack(side="left", padx=(0, 12))
 
-        # ── GPU bars ──────────────────────────────────────────────────────────
+        # ── GPU bars — grouped by metric, GPU0 stacked over GPU1 ──────────────
         self._gpu_vram_bars:       list[dict]     = []
         self._gpu_compute_bars:    list[dict]     = []
         self._gpu_temp_labels:     list[tk.Label] = []
         self._gpu_temp_hdr_labels: list[tk.Label] = []
 
+        vram_group = tk.Frame(self._frame, bg=T["bg2"]); vram_group.pack(side="left", padx=8)
+        load_group = tk.Frame(self._frame, bg=T["bg2"]); load_group.pack(side="left", padx=8)
+        temp_group = tk.Frame(self._frame, bg=T["bg2"]); temp_group.pack(side="left", padx=8)
+
         for i in range(2):
-            vram_bar = self._make_bar(self._frame, f"GPU {i} VRAM", T["bar_fg"])
-            vram_bar["outer"].pack(side="left", padx=8)
+            vram_bar = self._make_bar(vram_group, f"GPU {i} VRAM", T["bar_fg"])
+            vram_bar["outer"].pack(side="top", anchor="w", pady=(0, 3))
             self._gpu_vram_bars.append(vram_bar)
 
-            compute_bar = self._make_bar(self._frame, f"GPU {i} Load", T["orange"])
-            compute_bar["outer"].pack(side="left", padx=8)
+            compute_bar = self._make_bar(load_group, f"GPU {i} Load", T["orange"])
+            compute_bar["outer"].pack(side="top", anchor="w", pady=(0, 3))
             compute_bar["text"].config(text="—")
             self._gpu_compute_bars.append(compute_bar)
 
-            temp_outer = tk.Frame(self._frame, bg=T["bg2"])
-            temp_outer.pack(side="left", padx=(0, 8))
+            temp_outer = tk.Frame(temp_group, bg=T["bg2"])
+            temp_outer.pack(side="top", anchor="w", pady=(0, 3))
             temp_hdr = tk.Label(temp_outer, text=f"GPU {i} Temp", bg=T["bg2"], fg=T["fg2"],
                                 font=("Consolas", 9))
             temp_hdr.pack(anchor="w")
@@ -80,14 +84,13 @@ class Header:
                 compute_bar["text"].config(text="not detected")
                 temp_lbl.config(text="—°C")
 
-        # ── WSL RAM ───────────────────────────────────────────────────────────
-        wsl_bar = self._make_bar(self._frame, "WSL RAM", T["green"])
-        wsl_bar["outer"].pack(side="left", padx=8)
+        # ── RAM — WSL stacked over Windows ────────────────────────────────────
+        ram_group = tk.Frame(self._frame, bg=T["bg2"]); ram_group.pack(side="left", padx=8)
+        wsl_bar = self._make_bar(ram_group, "WSL RAM", T["green"])
+        wsl_bar["outer"].pack(side="top", anchor="w", pady=(0, 3))
         self._wsl_ram_bar = wsl_bar
-
-        # ── Windows RAM ───────────────────────────────────────────────────────
-        win_ram_bar = self._make_bar(self._frame, "Win RAM", T["accent"])
-        win_ram_bar["outer"].pack(side="left", padx=8)
+        win_ram_bar = self._make_bar(ram_group, "Win RAM", T["accent"])
+        win_ram_bar["outer"].pack(side="top", anchor="w", pady=(0, 3))
         self._win_ram_bar = win_ram_bar
 
         # ── Windows CPU ───────────────────────────────────────────────────────

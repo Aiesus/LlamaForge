@@ -39,6 +39,8 @@ class LibraryManager:
         # models in the currently-selected library: full_wsl_path -> size_bytes
         self._cur_lib: str = ""
         self._cur_sizes: dict[str, int] = {}
+        self._msort_col = "name"   # sort column for the models panel
+        self._msort_rev = False
 
     # ── Window ────────────────────────────────────────────────────────────────
     def show(self) -> None:
@@ -94,9 +96,9 @@ class LibraryManager:
         self._mtree = ttk.Treeview(m_frame, columns=("name", "size", "quant"),
                                    show="headings", selectmode="extended",
                                    style="Libs.Treeview")
-        self._mtree.heading("name",  text="Name")
-        self._mtree.heading("size",  text="Size")
-        self._mtree.heading("quant", text="Quant")
+        self._mtree.heading("name",  text="Name",  command=lambda: self._sort_models("name"))
+        self._mtree.heading("size",  text="Size",  command=lambda: self._sort_models("size"))
+        self._mtree.heading("quant", text="Quant", command=lambda: self._sort_models("quant"))
         self._mtree.column("name",  width=360, stretch=True,  anchor="w")
         self._mtree.column("size",  width=90,  stretch=False, anchor="e")
         self._mtree.column("quant", width=90,  stretch=False, anchor="center")
@@ -180,6 +182,16 @@ class LibraryManager:
         self._cur_lib = sel[0]
         self._refresh_models_panel()
 
+    _TIER_ORDER = {"lossless": 0, "high": 1, "balanced": 2, "low": 3, "vlow": 4}
+
+    def _sort_models(self, col: str) -> None:
+        if self._msort_col == col:
+            self._msort_rev = not self._msort_rev
+        else:
+            self._msort_col = col
+            self._msort_rev = (col == "size")   # size defaults largest-first
+        self._refresh_models_panel()
+
     def _refresh_models_panel(self) -> None:
         from gui.left_panel import _parse_gguf
         for row in self._mtree.get_children():
@@ -189,12 +201,32 @@ class LibraryManager:
             return
         _, _, sizes = self._scan_lib(self._cur_lib)
         self._cur_sizes = sizes
-        for path in sorted(sizes, key=lambda p: p.split("/")[-1].lower()):
+
+        rows = []
+        for path, size in sizes.items():
             fname = path.split("/")[-1]
             meta  = _parse_gguf(fname)
+            rows.append((path, fname, meta, size))
+
+        col = self._msort_col
+        if col == "size":
+            keyfn = lambda r: r[3]
+        elif col == "quant":
+            keyfn = lambda r: (self._TIER_ORDER.get(r[2].get("tier", "balanced"), 2),
+                               r[1].lower())
+        else:  # name
+            keyfn = lambda r: r[1].lower()
+        rows.sort(key=keyfn, reverse=self._msort_rev)
+
+        # heading arrows
+        for c, base in (("name", "Name"), ("size", "Size"), ("quant", "Quant")):
+            arrow = (" ▼" if self._msort_rev else " ▲") if c == col else ""
+            self._mtree.heading(c, text=base + arrow)
+
+        for path, fname, meta, size in rows:
             self._mtree.insert("", tk.END, iid=path,
                                values=(meta.get("display", fname),
-                                       _fmt_size(sizes[path]),
+                                       _fmt_size(size),
                                        meta.get("quant", "")))
 
     # ── Library add / remove / reorder ────────────────────────────────────────
