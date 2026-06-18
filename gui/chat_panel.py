@@ -1,5 +1,5 @@
 """
-Inline chat panel — vertical split inside the right log pane.
+Chat tab — lives in the main notebook.
 Streams from /v1/chat/completions using the currently loaded model.
 """
 from __future__ import annotations
@@ -17,20 +17,19 @@ import urllib.request
 
 class ChatPanel:
 
-    def __init__(self, right_paned: tk.PanedWindow, state: AppState, T: dict,
-                 log_fn: Callable, hide_fn: Callable):
-        self._paned   = right_paned
+    def __init__(self, parent: tk.Widget, state: AppState, T: dict,
+                 log_fn: Callable):
         self._state   = state
         self._T       = T
         self._log     = log_fn
-        self._hide_fn = hide_fn   # called when user clicks ▲ Hide
 
         self._messages:  list[dict] = []
         self._streaming: bool       = False
         self._connected: bool       = False
         self._stop_evt              = threading.Event()
 
-        self.frame = tk.Frame(right_paned, bg=T["bg2"])
+        self.frame = tk.Frame(parent, bg=T["bg2"])
+        self.frame.pack(fill="both", expand=True)
         self._build()
 
     # ── Build ─────────────────────────────────────────────────────────────────
@@ -49,9 +48,6 @@ class ChatPanel:
         tk.Button(ctrl, text="New Chat", bg=T["btn"], fg=T["btn_fg"],
                   relief="flat", cursor="hand2", font=("Segoe UI", 8),
                   command=self._new_chat).pack(side="left", padx=2)
-        tk.Button(ctrl, text="▲ Hide", bg=T["btn"], fg=T["btn_fg"],
-                  relief="flat", cursor="hand2", font=("Segoe UI", 8),
-                  command=self._hide_fn).pack(side="left", padx=2)
 
         # ── System prompt (collapsible) ────────────────────────────────────
         self._sys_open = False
@@ -139,12 +135,6 @@ class ChatPanel:
         self._hist.tag_config("user",      foreground=T["fg"])
         self._hist.tag_config("assistant", foreground=T["fg"])
         self._hist.tag_config("dim",       foreground=T["fg2"])
-
-    # ── Show / hide ───────────────────────────────────────────────────────────
-
-    def show(self, height: int = 300) -> None:
-        if str(self.frame) not in self._paned.panes():
-            self._paned.add(self.frame, minsize=120, height=height)
 
     # ── System prompt toggle ──────────────────────────────────────────────────
 

@@ -121,7 +121,7 @@ class LeftPanel:
         # (The old two-column tree|controls split is gone now that the model
         # picker is a compact dropdown instead of a full-height treeview.)
         self._col = tk.Frame(self._frame, bg=T["bg2"])
-        self._col.pack(fill="both", expand=True)
+        self._col.pack(fill="x")
         self._tree_col = self._ctrl_col = self._col
 
         self._build_models_section()
@@ -502,7 +502,7 @@ class LeftPanel:
               "Restart the tool-proxy.py process in WSL.\n"
               "Use this if Cline/extensions can't reach the model after a reload,\n"
               "or if the proxy crashed. Reconnects :8088 → :8089.")
-        _icon("🎨", T["btn_fg"], self._open_theme_picker, "Change theme.")
+        _icon("🎨", T["btn_fg"], self._open_theme_picker, "Appearance — theme & text size.")
         self._crash_btn = _icon(
             "⚠", T["bg"] if has_crashes else T["btn_fg"],
             self._open_crash_log, "View the crash log.",
@@ -673,33 +673,54 @@ class LeftPanel:
         from gui.themes import THEME_LABELS
         from core.settings import save_settings
         T = self._T
+        s = self._state.settings
         win = tk.Toplevel(self._root)
-        win.title("Choose Theme")
-        win.geometry("320x260")
+        win.title("Appearance")
+        win.geometry("360x470")
         win.configure(bg=T["bg"])
-        win.resizable(False, False)
-        tk.Label(win, text="Select theme:", bg=T["bg"], fg=T["fg"],
-                 font=("Segoe UI", 10)).pack(pady=(16, 8))
-        var = tk.StringVar(value=self._state.settings.theme)
+        win.resizable(True, True)
+
+        tk.Label(win, text="Theme:", bg=T["bg"], fg=T["fg"],
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=24, pady=(16, 4))
+        var = tk.StringVar(value=s.theme)
         for key, label in THEME_LABELS.items():
             tk.Radiobutton(
                 win, text=label, variable=var, value=key,
                 bg=T["bg"], fg=T["fg"], selectcolor=T["bg3"],
                 activebackground=T["bg"], activeforeground=T["accent"],
                 font=("Segoe UI", 9), cursor="hand2"
-            ).pack(anchor="w", padx=24, pady=2)
+            ).pack(anchor="w", padx=24, pady=1)
+
+        # ── Text size ──────────────────────────────────────────────────────────
+        tk.Label(win, text="Text size:", bg=T["bg"], fg=T["fg"],
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=24, pady=(14, 2))
+        scale_var = tk.DoubleVar(value=float(s.ui_scale or 1.0))
+        srow = tk.Frame(win, bg=T["bg"])
+        srow.pack(fill="x", padx=24)
+        pct_lbl = tk.Label(srow, text=f"{int(round(scale_var.get()*100))}%", width=6,
+                           bg=T["bg"], fg=T["accent"], font=("Segoe UI", 10, "bold"))
+        pct_lbl.pack(side="right")
+        ttk.Scale(
+            srow, from_=0.8, to=2.0, variable=scale_var,
+            command=lambda v: pct_lbl.config(text=f"{int(round(float(v)*100))}%"),
+        ).pack(side="left", fill="x", expand=True)
+        tk.Label(win, text="80% – 200%  (applies on restart)", bg=T["bg"], fg=T["fg2"],
+                 font=("Segoe UI", 8)).pack(anchor="w", padx=24, pady=(2, 0))
+
         def _apply():
-            chosen = var.get()
-            self._state.settings.theme = chosen
-            save_settings(self._state.settings)
+            s.theme    = var.get()
+            s.ui_scale = round(float(scale_var.get()), 2)
+            save_settings(s)
             messagebox.showinfo(
-                "Theme saved",
-                f"Theme set to '{THEME_LABELS[chosen]}'.\nRestart the app to apply.",
+                "Appearance saved",
+                f"Theme '{THEME_LABELS[s.theme]}' and text size {int(round(s.ui_scale*100))}% saved.\n"
+                "Restart the app to apply.",
                 parent=win,
             )
             win.destroy()
+
         btn_row = tk.Frame(win, bg=T["bg"])
-        btn_row.pack(pady=12)
+        btn_row.pack(pady=14)
         tk.Button(btn_row, text="Apply", bg=T["green"], fg=T["bg"],
                   relief="flat", font=("Segoe UI", 10, "bold"), cursor="hand2",
                   command=_apply).pack(side="left", padx=6)

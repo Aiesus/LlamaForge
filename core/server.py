@@ -5,12 +5,23 @@ No tkinter imports — all output via log_fn callbacks.
 from __future__ import annotations
 import http.client
 import re
+import shlex
 import subprocess
 import threading
 import time
 import urllib.error
 from enum import Enum
 from typing import Callable
+
+
+def _qpath(path: str, user: str) -> str:
+    """Expand a leading ~ (so quoting doesn't suppress it) then POSIX-quote, so
+    paths with spaces (e.g. /mnt/d/AI Models/...) survive `wsl bash -c`."""
+    if path == "~":
+        path = f"/home/{user}"
+    elif path.startswith("~/"):
+        path = f"/home/{user}/{path[2:]}"
+    return shlex.quote(path)
 
 _TPS_RE = re.compile(r"n_tokens_second\s*=\s*([\d.]+)", re.IGNORECASE)
 
@@ -58,8 +69,8 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
 
     parts = [
         f"cd {s.llama_root} && {launch_prefix}{llama_bin}",
-        f"-m {model_path}",
-        f"--alias {alias}",
+        f"-m {_qpath(model_path, s.wsl_user)}",
+        f"--alias {shlex.quote(alias)}",
         f"-ngl {p.get('ngl', 60)}",
         f"-c {p.get('ctx', 16384)}",
         f"-b {p.get('batch', 512)}",
@@ -176,7 +187,7 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
         parts.append("--reasoning off")
     tc = p.get("tokenizer_config", "").strip()
     if tc:
-        parts.append(f"--chat-template-file {tc}")
+        parts.append(f"--chat-template-file {_qpath(tc, s.wsl_user)}")
     if p.get("no_warmup"):
         parts.append("--no-warmup")
 

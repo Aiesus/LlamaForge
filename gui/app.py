@@ -332,6 +332,17 @@ class LlamaApp:
         self.root.minsize(1000, 640)
 
         settings = load_settings()
+
+        # Global UI scale: Tk renders point-sized fonts (all our font tuples) at
+        # this factor, so one call enlarges text everywhere. Set before any
+        # widgets are created. Clamped to a sane range.
+        try:
+            scale = max(0.8, min(2.0, float(settings.ui_scale or 1.0)))
+            base  = float(self.root.tk.call("tk", "scaling"))
+            self.root.tk.call("tk", "scaling", base * scale)
+        except Exception:
+            pass
+
         self.root.geometry(settings.geometry or "1380x860")
 
         self.state = AppState(
@@ -428,16 +439,13 @@ class LlamaApp:
         )
         self._paned.pack(fill="both", expand=True)
 
-        self._saved_log_width: int | None = None
         self._build_left_pane()
         self._build_center_tabs()
-        self._build_log_panel()
-        self._build_log_stub()
 
-        # Restore saved sash positions.
+        # Restore the saved sash position (left | center).
         # winfo_width() can return a non-zero "requested" width before the widget
         # is actually painted.  <Configure> fires with the true rendered size, so
-        # we bind once and unregister immediately after setting positions.
+        # we bind once and unregister immediately after setting the position.
         s = self.state.settings
         _done = [False]
         def _restore_sashes(event=None):
@@ -448,9 +456,6 @@ class LlamaApp:
             try:
                 if s.pane_sash0 > 0:
                     self._paned.sash_place(0, s.pane_sash0, 0)
-                if s.pane_sash1 > 0:
-                    # Small delay so sash-0's layout change propagates first
-                    self.root.after(20, lambda: self._paned.sash_place(1, s.pane_sash1, 0))
             except Exception:
                 pass
         self._paned.bind("<Configure>", _restore_sashes)
@@ -460,8 +465,16 @@ class LlamaApp:
         T = self.T
         left = tk.Frame(self._paned, bg=T["bg2"])
         self._paned.add(left, minsize=300, width=460)
+
+        # Controls on top (fixed height), live log fills the rest below.
+        controls_holder = tk.Frame(left, bg=T["bg2"])
+        controls_holder.pack(side="top", fill="x")
         self.left_panel = LeftPanel(self.root, self.state, self.T, log_fn=self._log)
-        self.left_panel.build(left)
+        self.left_panel.build(controls_holder)
+
+        log_holder = tk.Frame(left, bg=T["bg2"])
+        log_holder.pack(side="top", fill="both", expand=True)
+        self._build_log_widget(log_holder)
 
     def _build_center_tabs(self):
         T = self.T
@@ -509,6 +522,13 @@ class LlamaApp:
                 TabClass(frame, self.state, self.T, log_fn=self._log).build()
             else:
                 self._lazy_tab_builders[idx] = (TabClass, frame)
+
+        # Chat tab (eager — cheap; always present so server-ready can't race it)
+        from gui.chat_panel import ChatPanel
+        chat_frame = tk.Frame(self.notebook, bg=self.T["bg2"])
+        self.notebook.add(chat_frame, text="Chat")
+        self.chat_panel = ChatPanel(chat_frame, self.state, self.T, log_fn=self._log)
+
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _on_tab_changed(self, event=None) -> None:
@@ -522,36 +542,17 @@ class LlamaApp:
             # giving immediate visual feedback before the synchronous build.
             self.root.after(1, lambda: TabClass(frame, self.state, self.T, log_fn=self._log).build())
 
-    def _build_log_panel(self):
+    def _build_log_widget(self, parent):
+        """Build the live-log UI (header buttons + text + filter) into `parent`
+        — now the lower part of the left column."""
         T = self.T
-        self.right = tk.Frame(self._paned, bg=T["bg2"])
-        self._paned.add(self.right, minsize=180, width=400)
 
-        # Vertical split: log on top (40%), chat on bottom (60%)
-        self._right_paned = tk.PanedWindow(
-            self.right, orient="vertical",
-            bg=T["bg3"], sashwidth=5, sashpad=1,
-            sashrelief="flat", showhandle=False,
-            relief="flat", bd=0,
-        )
-        self._right_paned.pack(fill="both", expand=True)
-
-        # ── Log pane ──────────────────────────────────────────────────────────
-        self._log_pane = tk.Frame(self._right_paned, bg=T["bg2"])
-        self._right_paned.add(self._log_pane, minsize=80)
-
-        hrow = tk.Frame(self._log_pane, bg=T["bg2"])
+        hrow = tk.Frame(parent, bg=T["bg2"])
         hrow.pack(fill="x")
         _section_label(hrow, "LIVE LOG", T)
 
         ctrl = tk.Frame(hrow, bg=T["bg2"])
         ctrl.pack(side="right", padx=8)
-
-        tk.Button(
-            ctrl, text="◀ Hide", bg=T["btn"], fg=T["btn_fg"],
-            relief="flat", cursor="hand2", font=("Segoe UI", 8),
-            command=self._toggle_log,
-        ).pack(side="left", padx=2)
 
         self._pause_btn = tk.Button(
             ctrl, text="⏸ Pause", bg=T["btn"], fg=T["btn_fg"],
@@ -568,14 +569,7 @@ class LlamaApp:
                   relief="flat", cursor="hand2", font=("Segoe UI", 8),
                   command=self._copy_log).pack(side="left", padx=2)
 
-        self._chat_toggle_btn = tk.Button(
-            ctrl, text="▼ Chat", bg=T["btn"], fg=T["accent"],
-            relief="flat", cursor="hand2", font=("Segoe UI", 8),
-            command=self._toggle_chat,
-        )
-        # Shown only after first server-ready; packed then
-
-        _log_wrap = tk.Frame(self._log_pane, bg=T["log_bg"])
+        _log_wrap = tk.Frame(parent, bg=T["log_bg"])
         _log_wrap.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         _log_vsb = ttk.Scrollbar(_log_wrap, orient="vertical")
         _log_vsb.pack(side="right", fill="y")
@@ -600,7 +594,7 @@ class LlamaApp:
         self._log_filter_after_id: str | None = None
 
         # ── Log filter entry ──────────────────────────────────────────────────
-        filter_row = tk.Frame(self._log_pane, bg=T["bg2"])
+        filter_row = tk.Frame(parent, bg=T["bg2"])
         filter_row.pack(fill="x", padx=8, pady=(0, 2))
         tk.Label(filter_row, text="Filter:", bg=T["bg2"], fg=T["fg2"],
                  font=("Segoe UI", 8)).pack(side="left")
@@ -611,26 +605,6 @@ class LlamaApp:
             bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
             font=("Consolas", 8), insertbackground=T["fg"],
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))
-
-        # ── Chat panel (built now, added to paned on first server-ready) ──────
-        from gui.chat_panel import ChatPanel
-        self.chat_panel = ChatPanel(
-            self._right_paned, self.state, T,
-            log_fn=self._log,
-            hide_fn=self._toggle_chat,
-        )
-        self._chat_ever_shown = False
-
-    def _build_log_stub(self):
-        T = self.T
-        self._log_stub = tk.Frame(self._paned, bg=T["bg2"], width=24)
-        tk.Button(
-            self._log_stub, text="▶",
-            bg=T["bg2"], fg=T["fg2"],
-            relief="flat", cursor="hand2",
-            font=("Segoe UI", 9), bd=0,
-            command=self._toggle_log,
-        ).pack(fill="both", expand=True)
 
     # ── Services ──────────────────────────────────────────────────────────────
 
@@ -725,13 +699,9 @@ class LlamaApp:
 
     def _on_server_ready(self) -> None:
         from core import agents as agents_core
-        # Show chat panel and mark it connected on first (and subsequent) loads
+        # Mark the Chat tab connected (Send enabled) on each load
         if hasattr(self, "chat_panel"):
-            def _activate_chat():
-                self.chat_panel.set_connected(True)
-                if str(self.chat_panel.frame) not in self._right_paned.panes():
-                    self._show_chat()
-            self._safe_after(_activate_chat)
+            self._safe_after(lambda: self.chat_panel.set_connected(True))
 
         s = self.state.settings
         for agent in self.state.agents:
@@ -810,36 +780,6 @@ class LlamaApp:
             self.log_box.config(state="disabled")
         except Exception:
             pass
-
-    def _toggle_log(self):
-        panes = self._paned.panes()
-        if str(self.right) in panes:
-            self._saved_log_width = self.right.winfo_width()
-            self._paned.forget(self.right)
-            self._paned.add(self._log_stub, minsize=24, width=24)
-        else:
-            if str(self._log_stub) in self._paned.panes():
-                self._paned.forget(self._log_stub)
-            w = self._saved_log_width or 400
-            self._paned.add(self.right, minsize=180, width=w)
-
-    def _toggle_chat(self) -> None:
-        visible = str(self.chat_panel.frame) in self._right_paned.panes()
-        if visible:
-            self._right_paned.forget(self.chat_panel.frame)
-            self._chat_toggle_btn.config(text="▶ Chat")
-        else:
-            self._show_chat()
-            self._chat_toggle_btn.config(text="▼ Chat")
-
-    def _show_chat(self) -> None:
-        """Add chat to right_paned at 60 % of the panel height."""
-        h = self._right_paned.winfo_height()
-        chat_h = max(200, int(h * 0.6)) if h > 10 else 300
-        self.chat_panel.show(height=chat_h)
-        if not self._chat_ever_shown:
-            self._chat_ever_shown = True
-            self._chat_toggle_btn.pack(side="left", padx=2)
 
     def _toggle_scroll_pause(self):
         self.state._scroll_paused = not self.state._scroll_paused
@@ -928,8 +868,6 @@ class LlamaApp:
         s.cuda_swap    = self.state.cuda_swap_var.get()
         try:
             s.pane_sash0 = self._paned.sash_coord(0)[0]
-            if str(self.right) in self._paned.panes():
-                s.pane_sash1 = self._paned.sash_coord(1)[0]
         except Exception:
             pass
         save_settings(s)

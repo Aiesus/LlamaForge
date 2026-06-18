@@ -141,6 +141,7 @@ class AppSettings:
     # UI
     theme:          str  = "catppuccin-mocha"
     geometry:       str  = "1380x860"
+    ui_scale:       float = 1.2   # global text/scaling multiplier (1.0 = default)
 
     # Last-used
     last_model:     str  = ""
@@ -153,9 +154,8 @@ class AppSettings:
     # Useful when GPU 1 is larger and should be the primary compute device.
     cuda_swap:      bool = False
 
-    # Saved PanedWindow sash positions (pixels from left edge)
-    pane_sash0:     int  = 460   # between left panel and center tabs
-    pane_sash1:     int  = 940   # between center tabs and log
+    # Saved PanedWindow sash position (pixels from left edge): left | center
+    pane_sash0:     int  = 460
 
     # Setup completed flag
     setup_done:     bool = False
