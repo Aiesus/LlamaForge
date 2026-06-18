@@ -12,3 +12,8 @@ build/
 settings.json
 profiles.json
 agents.json
+
+# Generated / local-only — not source
+.codegraph/
+Optimizer/
+/~/

@@ -193,13 +193,14 @@ class ChatPanel:
 
         sys_text = self._sys_text.get("1.0", tk.END).strip()
 
-        # Build message list: keep existing history, append new user turn
-        if not self._messages:
+        # Build message list: keep existing history, append new user turn.
+        # Only include system message when content is non-empty — empty string
+        # wastes prompt tokens and can confuse some models.
+        if self._messages and self._messages[0]["role"] == "system":
             if sys_text:
-                self._messages.append({"role": "system", "content": sys_text})
-        elif self._messages[0]["role"] == "system":
-            # Update system prompt in place if it changed
-            self._messages[0]["content"] = sys_text
+                self._messages[0]["content"] = sys_text   # update in place
+            else:
+                self._messages.pop(0)                     # remove now-empty system msg
         elif sys_text:
             self._messages.insert(0, {"role": "system", "content": sys_text})
 
@@ -234,6 +235,8 @@ class ChatPanel:
 
     # ── Streaming ─────────────────────────────────────────────────────────────
 
+    _PAINT_MS = 0.05   # batch tokens for 50ms before flushing to GUI
+
     def _stream_worker(self, messages: list) -> None:
         s   = self._state.settings
         key = self._state.api_key_server_var.get().strip()
@@ -242,13 +245,14 @@ class ChatPanel:
         else:
             base = f"http://localhost:{self._state.port_var.get()}"
 
-        payload = json.dumps({
-            "model":       self._state.model_var.get(),
+        body: dict = {
+            "model":       self._state.model_var.get().split("/")[-1],
             "messages":    messages,
             "stream":      True,
             "temperature": round(self._state.temp_var.get(), 3),
             "top_p":       round(self._state.top_p_var.get(), 3),
-        }).encode()
+        }
+        payload = json.dumps(body).encode()
 
         headers = {
             "Content-Type":  "application/json",
@@ -257,8 +261,19 @@ class ChatPanel:
         if key:
             headers["Authorization"] = f"Bearer {key}"
 
-        tokens: list[str] = []
-        error_msg: str    = ""
+        tokens:   list[str] = []
+        pending:  list[str] = []
+        error_msg: str      = ""
+        last_paint          = time.monotonic()
+
+        def _flush(final_tps: float = 0.0) -> None:
+            if not pending:
+                return
+            batch = "".join(pending)
+            pending.clear()
+            elapsed = time.monotonic() - self._stream_t0
+            tps = self._token_count / elapsed if elapsed > 0.1 else final_tps
+            self._state.root.after(0, lambda b=batch, t=tps: self._paint_batch(b, t))
 
         try:
             req = urllib.request.Request(
@@ -279,29 +294,32 @@ class ChatPanel:
                         tok = json.loads(data)["choices"][0]["delta"].get("content", "")
                         if tok:
                             tokens.append(tok)
+                            pending.append(tok)
                             self._token_count += 1
-                            elapsed = time.monotonic() - self._stream_t0
-                            tps = self._token_count / elapsed if elapsed > 0.1 else 0
-                            self._state.root.after(
-                                0, lambda t=tok, s=tps: self._paint_token(t, s))
+                            now = time.monotonic()
+                            if now - last_paint >= self._PAINT_MS:
+                                _flush()
+                                last_paint = now
                     except (KeyError, IndexError, json.JSONDecodeError):
                         pass
         except Exception as exc:
             if not self._stop_evt.is_set():
                 error_msg = str(exc)
 
-        full    = "".join(tokens)
-        elapsed = time.monotonic() - self._stream_t0
+        full      = "".join(tokens)
+        elapsed   = time.monotonic() - self._stream_t0
         final_tps = len(tokens) / elapsed if elapsed > 0.1 and tokens else 0.0
+        _flush(final_tps)   # paint any remaining buffered tokens
+
         self._messages.append({"role": "assistant", "content": full})
         stopped = self._stop_evt.is_set()
         self._state.root.after(
             0, lambda: self._stream_done(error_msg, stopped, final_tps))
 
-    def _paint_token(self, token: str, tps: float = 0.0) -> None:
+    def _paint_batch(self, text: str, tps: float = 0.0) -> None:
         try:
             self._hist.config(state="normal")
-            self._hist.insert(tk.END, token, "assistant")
+            self._hist.insert(tk.END, text, "assistant")
             self._hist.config(state="disabled")
             self._hist.see(tk.END)
             if tps > 0:

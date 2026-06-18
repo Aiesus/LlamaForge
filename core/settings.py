@@ -4,6 +4,7 @@ All paths/usernames come from here — nothing hardcoded elsewhere.
 """
 from __future__ import annotations
 import json
+import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,7 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "api_key_server":      "",
     "cont_batching":       True,
     "embeddings":          False,
-    "metrics":             False,
+    "metrics":             True,
     "props_endpoint":      True,
     "slots_endpoint":      True,
     "flash_attn":          False,
@@ -58,6 +59,8 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "no_mmap":             False,
     "no_display_prompt":   False,
     "jinja":               False,
+    "reasoning_off":       False,
+    "disable_cuda_graphs": False,
     "tensor_split":        "",
     "main_gpu":            0,
     "extra_flags":         "",
@@ -74,11 +77,14 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "flag_prio_batch_level": "2",
     "flag_cache_reuse":    False,
     "flag_cache_reuse_n":  "256",
+    "override_expert_count":   False,
+    "override_expert_count_n": "2",
     "flag_spec_mtp":       False,
     "flag_spec_draft_n":   False,
     "flag_spec_draft_n_max": "2",
     "flag_prio_draft":     False,
     "flag_prio_draft_level": "2",
+    "verbose_log":         False,
 }
 
 BUILTIN_PROFILES: dict[str, dict] = {
@@ -121,6 +127,10 @@ class AppSettings:
     turbo_root:     str = "~/llama-turbo"
     models_subdir:  str = "models"
 
+    # Model libraries — list of WSL paths scanned for .gguf files.
+    # First entry is the default download destination.
+    model_libraries: list = field(default_factory=list)
+
     # Active binary (path inside WSL, absolute or ~-relative)
     llama_bin:      str = ""
 
@@ -152,9 +162,32 @@ class AppSettings:
 
     # ── Derived properties ─────────────────────────────────────────────────────
 
+    def wsl_path_to_unc(self, wsl_path: str) -> str:
+        """Convert any WSL path to a Windows-accessible path."""
+        if not self.wsl_distro or not self.wsl_user:
+            return ""
+        path = wsl_path.replace("~", f"/home/{self.wsl_user}")
+        # /mnt/x/ → Windows drive (X:\...)
+        mnt = re.match(r"^/mnt/([a-zA-Z])(?:/|$)(.*)", path)
+        if mnt:
+            drive = mnt.group(1).upper()
+            rest  = mnt.group(2).replace("/", "\\")
+            return f"{drive}:\\{rest}" if rest else f"{drive}:\\"
+        # Native WSL filesystem
+        win_path = path.lstrip("/").replace("/", "\\")
+        return rf"\\wsl.localhost\{self.wsl_distro}\{win_path}"
+
+    @property
+    def all_library_uncs(self) -> list:
+        """Return [(wsl_path, unc_path), ...] for every configured library."""
+        return [(p, self.wsl_path_to_unc(p)) for p in self.model_libraries
+                if self.wsl_path_to_unc(p)]
+
     @property
     def models_unc(self) -> str:
-        """UNC path to the models folder, accessible from Windows."""
+        """UNC path to the primary (first) models folder."""
+        if self.model_libraries:
+            return self.wsl_path_to_unc(self.model_libraries[0])
         if not self.wsl_distro or not self.wsl_user:
             return ""
         root = self.llama_root.replace("~", f"/home/{self.wsl_user}")
@@ -163,7 +196,9 @@ class AppSettings:
 
     @property
     def models_wsl(self) -> str:
-        """WSL path to the models folder."""
+        """WSL path to the primary (first) models folder."""
+        if self.model_libraries:
+            return self.model_libraries[0]
         return f"{self.llama_root}/{self.models_subdir}"
 
     def fork_bin(self, fork: dict) -> str:
@@ -192,9 +227,13 @@ class AppSettings:
 def load_settings() -> AppSettings:
     try:
         if SETTINGS_FILE.exists():
-            return AppSettings.from_dict(
+            s = AppSettings.from_dict(
                 json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             )
+            # Migration: populate model_libraries from legacy llama_root + models_subdir
+            if not s.model_libraries and s.llama_root:
+                s.model_libraries = [f"{s.llama_root}/{s.models_subdir}"]
+            return s
     except Exception:
         pass
     return AppSettings()

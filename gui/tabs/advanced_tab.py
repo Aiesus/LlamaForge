@@ -1,6 +1,8 @@
 """Advanced tab — RoPE, performance flags, speculative decoding, WSL, misc."""
 from __future__ import annotations
 import subprocess
+import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Callable
@@ -61,27 +63,6 @@ class AdvancedTab:
 
         sep(sf, T)
 
-        # ── Speculative decoding ───────────────────────────────────────────────
-        section(sf, "SPECULATIVE DECODING (MTP)", T)
-        sd = tk.Frame(sf, bg=sf.cget("bg"))
-        sd.pack(fill="x", padx=12, pady=4)
-
-        cbk(sd, "--spec-type draft-mtp", self._state.spec_mtp_var,
-            "Enable Multi-Token Prediction speculative decoding (DeepSeek / Qwen MTP models). "
-            "Requires a model with built-in MTP heads — no separate draft model needed. "
-            "Use --draft-max below to set how many tokens to draft per step.")
-        flag_row(sd, "--draft-max  (tokens per draft step)", self._state.spec_draft_n_en_var,
-                 self._state.spec_draft_n_var, "entry",
-                 "How many tokens to speculatively draft per step when --spec-type draft-mtp is on. "
-                 "2–4 is typical; higher values help on fast GPUs.",
-                 val_width=3)
-        flag_row(sd, "--draft-prio (draft thread priority)", self._state.prio_draft_en_var,
-                 self._state.prio_draft_level_var, "combo",
-                 "Priority for the speculative draft thread.",
-                 val_values=PRIO_LEVELS, val_width=3)
-
-        sep(sf, T)
-
         # ── WSL memory ────────────────────────────────────────────────────────
         section(sf, "WSL MEMORY (.wslconfig)", T)
         g2 = grid_frame(sf)
@@ -96,10 +77,12 @@ class AdvancedTab:
                                        fg=T["fg2"], font=("Segoe UI", 8))
         self._wsl_cur_label.pack(side="left", padx=6)
 
-        tk.Button(g2, text="Apply & Restart WSL", bg=T["btn"], fg=T["btn_fg"],
-                  relief="flat", cursor="hand2", font=("Segoe UI", 9),
-                  command=self._apply_wsl_memory
-                  ).grid(row=1, column=1, sticky="w", pady=(2, 4))
+        self._apply_wsl_btn = tk.Button(
+            g2, text="Apply & Restart WSL", bg=T["btn"], fg=T["btn_fg"],
+            relief="flat", cursor="hand2", font=("Segoe UI", 9),
+            command=self._apply_wsl_memory,
+        )
+        self._apply_wsl_btn.grid(row=1, column=1, sticky="w", pady=(2, 4))
 
         # Seed entry from actual .wslconfig, not the stored setting default
         from core.wsl import read_wsl_memory
@@ -181,26 +164,57 @@ class AdvancedTab:
         )
         if not ok:
             return
+
         try:
             write_wsl_memory(mem)
         except Exception as e:
             self._log(f"[WSL] Failed to write .wslconfig: {e}", "error")
             return
-        self._log(f"[WSL] .wslconfig updated — memory={mem}. Shutting down WSL…", "info")
+
+        # Disable button so it can't be double-clicked during the operation
+        self._apply_wsl_btn.config(state="disabled", text="Working…")
         self._wsl_cur_label.config(text=f"current: {mem}")
-        try:
-            subprocess.run(["wsl.exe", "--shutdown"], check=True, timeout=15)
-        except Exception as e:
-            self._log(f"[WSL] wsl.exe --shutdown failed: {e}  — restart WSL manually.", "warn")
-            return
-        self._log("[WSL] WSL stopped. Restarting with new limit…", "info")
-        distro = self._state.settings.wsl_distro or ""
-        cmd = ["wsl.exe", "-d", distro, "--", "true"] if distro else ["wsl.exe", "--", "true"]
-        try:
-            subprocess.run(cmd, check=True, timeout=20)
-            self._log(f"[WSL] WSL restarted — memory limit is now {mem}.", "success")
-        except Exception as e:
-            self._log(f"[WSL] WSL restart failed: {e}  — start a WSL terminal to bring it back up.", "warn")
+
+        def _run():
+            log  = self._log
+            root = self._state.root
+
+            # Pause monitor WSL polling so it doesn't hold a handle during shutdown
+            monitor = getattr(self._state, "monitor", None)
+            if monitor is not None:
+                monitor.pause_wsl()
+
+            try:
+                log(f"[WSL] .wslconfig updated — memory={mem}. Shutting down WSL…", "info")
+                # No check=True — wsl --shutdown exit codes are unreliable on Windows.
+                # No timeout cap — let WSL take as long as it needs; we're off the main thread.
+                subprocess.run(["wsl.exe", "--shutdown"], capture_output=True)
+
+                # Give the VM teardown time to finish before starting a new session
+                time.sleep(3)
+
+                log("[WSL] WSL stopped. Restarting with new limit…", "info")
+                distro = self._state.settings.wsl_distro or ""
+                cmd = (["wsl.exe", "-d", distro, "--", "true"]
+                       if distro else ["wsl.exe", "--", "true"])
+                r = subprocess.run(cmd, capture_output=True, timeout=60)
+                if r.returncode == 0:
+                    log(f"[WSL] WSL restarted — memory limit is now {mem}.", "success")
+                else:
+                    log(f"[WSL] WSL restart returned code {r.returncode} — "
+                        "check a WSL terminal if something looks wrong.", "warn")
+            except subprocess.TimeoutExpired:
+                log("[WSL] WSL restart timed out after 60 s — "
+                    "open a WSL terminal to bring it back up.", "warn")
+            except Exception as e:
+                log(f"[WSL] Error during WSL restart: {e}", "error")
+            finally:
+                if monitor is not None:
+                    monitor.resume_wsl()
+                root.after(0, lambda: self._apply_wsl_btn.config(   # type: ignore[union-attr]
+                    state="normal", text="Apply & Restart WSL"))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _refresh_preview(self) -> None:
         try:
@@ -223,9 +237,6 @@ class AdvancedTab:
         win = canvas.create_window((0, 0), window=sf, anchor="nw")
         sf.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
-        canvas.bind("<Enter>",
-            lambda e: self._frame.winfo_toplevel().bind_all(
-                "<MouseWheel>", lambda ev: canvas.yview_scroll(-1 if ev.delta > 0 else 1, "units")))
-        canvas.bind("<Leave>",
-            lambda e: self._frame.winfo_toplevel().unbind_all("<MouseWheel>"))
+        canvas.bind("<MouseWheel>",
+            lambda ev: canvas.yview_scroll(-1 if ev.delta > 0 else 1, "units"))
         return sf

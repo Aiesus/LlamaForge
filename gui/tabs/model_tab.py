@@ -101,16 +101,54 @@ class ModelTab:
 
         cbk(mf, "--no-mmap", self._state.no_mmap_var,
             "Force full model load into RAM. Required when using --cpu-moe.")
-        cbk(mf, "--cpu-moe  (MoE experts → CPU)", self._state.cpu_moe_var,
+        cbk(mf, "--jinja  (tool calling)", self._state.jinja_var,
+            "Use model's Jinja2 chat template. Required for native tool calling.")
+        cbk(mf, "--reasoning off  (disable thinking)", self._state.reasoning_off_var,
+            "Suppress model reasoning/<think> output server-side for ALL requests\n"
+            "(GUI chat, Cline, any API client). Applies on launch; restart to change.\n"
+            "Recommended for agentic/Cline use — faster, no thinking-token leakage.")
+        cbk(mf, "--no-warmup", self._state.no_warmup_var,
+            "Skip startup inference pass. Server ready faster; first request slightly slower.")
+        cbk(mf, "Disable CUDA graphs  (GGML_CUDA_DISABLE_GRAPHS=1)", self._state.disable_cuda_graphs_var,
+            "Sets env GGML_CUDA_DISABLE_GRAPHS=1 on launch. Enable for MoE + speculative\n"
+            "(draft-mtp) models: fixes a per-request VRAM leak in the CUDA graph cache that\n"
+            "otherwise exhausts the main GPU over a long session and crashes with a cuBLAS\n"
+            "INVALID_VALUE error. No speed cost on MoE/SSM models (graphs are already mostly\n"
+            "disabled for them). Leave OFF for dense models where CUDA graphs help.")
+
+        sep(sf, T)
+        section(sf, "MOE", T)
+        moef = tk.Frame(sf, bg=sf.cget("bg"))
+        moef.pack(fill="x", padx=12, pady=4)
+        cbk(moef, "--cpu-moe  (MoE experts → CPU)", self._state.cpu_moe_var,
             "For MoE models: keep expert tensors in CPU RAM. Always pair with --no-mmap.")
-        flag_row(mf, "--n-cpu-moe", self._state.n_cpu_moe_en_var,
+        flag_row(moef, "--n-cpu-moe", self._state.n_cpu_moe_en_var,
                  self._state.n_cpu_moe_var, "entry",
                  "Keep first N layers' MoE experts on CPU. Requires --no-mmap.",
                  val_width=5)
-        cbk(mf, "--jinja  (tool calling)", self._state.jinja_var,
-            "Use model's Jinja2 chat template. Required for native tool calling.")
-        cbk(mf, "--no-warmup", self._state.no_warmup_var,
-            "Skip startup inference pass. Server ready faster; first request slightly slower.")
+        flag_row(moef, "--override-kv expert count", self._state.override_expert_count_en_var,
+                 self._state.override_expert_count_var, "entry",
+                 "Override llama.expert_used_count. Default is whatever the model specifies (usually 1–2). "
+                 "Higher values activate more experts per token — more compute, potentially better quality.",
+                 val_width=4)
+
+        sep(sf, T)
+        section(sf, "SPECULATIVE DECODING (MTP)", T)
+        sd = tk.Frame(sf, bg=sf.cget("bg"))
+        sd.pack(fill="x", padx=12, pady=4)
+        cbk(sd, "--spec-type draft-mtp", self._state.spec_mtp_var,
+            "Enable Multi-Token Prediction speculative decoding (DeepSeek / Qwen MTP models). "
+            "Requires a model with built-in MTP heads — no separate draft model needed. "
+            "Use --draft-max below to set how many tokens to draft per step.")
+        flag_row(sd, "--draft-max  (tokens per draft step)", self._state.spec_draft_n_en_var,
+                 self._state.spec_draft_n_var, "entry",
+                 "How many tokens to speculatively draft per step when --spec-type draft-mtp is on. "
+                 "2–4 is typical; higher values help on fast GPUs.",
+                 val_width=3)
+        flag_row(sd, "--draft-prio (draft thread priority)", self._state.prio_draft_en_var,
+                 self._state.prio_draft_level_var, "combo",
+                 "Priority for the speculative draft thread.",
+                 val_values=["0", "1", "2", "3"], val_width=3)
 
         sep(sf, T)
         section(sf, "TOKENIZER CONFIG", T)
@@ -233,11 +271,15 @@ class ModelTab:
         if not model or not model.lower().endswith(".gguf"):
             return
         s   = self._state.settings
-        unc = s.models_unc
+        # model_var may now store a full WSL path; extract just the filename
+        fname = model.split("/")[-1]
+        # Use the library that the model belongs to, falling back to the primary library
+        lib_wsl = "/".join(model.split("/")[:-1]) if "/" in model else s.models_wsl
+        unc = s.wsl_path_to_unc(lib_wsl) if lib_wsl else s.models_unc
         if not unc:
             return
         from pathlib import Path
-        stem = model[:-5]
+        stem = fname[:-5]
         quant_pos = len(stem)
         for m in _TC_QUANT_RE.finditer(stem):
             quant_pos = m.start()
@@ -252,7 +294,7 @@ class ModelTab:
         for name in candidates:
             try:
                 if (Path(unc) / name).exists():
-                    found_wsl = f"{s.models_wsl}/{name}"
+                    found_wsl = f"{lib_wsl}/{name}"
                     break
             except Exception:
                 pass

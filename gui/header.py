@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from gui.app import AppState
 
 from core.monitor  import MonitorSnapshot
+from core.metrics  import TokenStats
 
 LogFn = Callable[[str, str | None], None]
 
@@ -95,6 +96,18 @@ class Header:
         cpu_bar["text"].config(text="— %")
         self._cpu_bar = cpu_bar
 
+        # ── Token / context monitor strip ─────────────────────────────────────
+        tok_outer = tk.Frame(self._frame, bg=T["bg2"])
+        tok_outer.pack(side="left", padx=(12, 8))
+        tk.Label(tok_outer, text="Context (tokens)", bg=T["bg2"], fg=T["fg2"],
+                 font=("Consolas", 9)).pack(anchor="w")
+        self._tok_ctx_lbl = tk.Label(tok_outer, text="—", bg=T["bg2"], fg=T["fg2"],
+                                     font=("Consolas", 10, "bold"))
+        self._tok_ctx_lbl.pack(anchor="w")
+        self._tok_req_lbl = tk.Label(tok_outer, text="", bg=T["bg2"], fg=T["fg2"],
+                                     font=("Consolas", 8))
+        self._tok_req_lbl.pack(anchor="w")
+
 
     # ── Update methods (called from main thread via _safe_after) ──────────────
 
@@ -122,6 +135,51 @@ class Header:
             self._tps_label.config(text="" if tps == 0.0 else f"{tps:.1f} t/s")
         except Exception:
             pass
+
+    def update_tokens(self, st: TokenStats) -> None:
+        """Update the context/token strip from a TokenStats poll."""
+        T = self._T
+        try:
+            if not st.ok:
+                self._tok_ctx_lbl.config(text="—", fg=T["fg2"])
+                self._tok_req_lbl.config(text="server offline")
+                return
+
+            if not st.metrics_on:
+                # /slots works but /metrics is disabled — show what we can.
+                gen = f"gen {self._fmt_k(st.n_decoded)}" if st.processing else "idle"
+                self._tok_ctx_lbl.config(text="metrics off", fg=T["orange"])
+                self._tok_req_lbl.config(text=f"enable --metrics · {gen}")
+                return
+
+            pct = st.ctx_ratio * 100
+            color = (T["red"]    if pct > 90 else
+                     T["orange"] if pct > 70 else
+                     T["yellow"] if pct > 50 else
+                     T["green"])
+            self._tok_ctx_lbl.config(
+                text=f"{pct:.0f}%  {self._fmt_k(st.ctx_used)}/{self._fmt_k(st.n_ctx)}",
+                fg=color)
+
+            parts = []
+            if st.last_prompt:
+                parts.append(f"last req {self._fmt_k(st.last_prompt)}")
+            parts.append(f"● gen {self._fmt_k(st.n_decoded)}" if st.processing else "idle")
+            self._tok_req_lbl.config(text="  ·  ".join(parts))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fmt_k(n: int) -> str:
+        try:
+            n = int(n)
+        except (ValueError, TypeError):
+            return "—"
+        if n >= 100_000:
+            return f"{n/1000:.0f}k"
+        if n >= 1_000:
+            return f"{n/1000:.1f}k"
+        return str(n)
 
     def update_stats(self, snap: MonitorSnapshot) -> None:
         T = self._T
@@ -178,15 +236,14 @@ class Header:
         outer = tk.Frame(parent, bg=T["bg2"])
         hdr = tk.Label(outer, text=label, bg=T["bg2"], fg=T["fg2"], font=("Consolas", 9))
         hdr.pack(anchor="w")
-        bar_bg = tk.Frame(outer, bg=T["bar_bg"], width=140, height=14)
-        bar_bg.pack_propagate(False)
-        bar_bg.pack()
-        bar_fill = tk.Frame(bar_bg, bg=color, width=0, height=14)
-        bar_fill.place(x=0, y=0, height=14)
+        canvas = tk.Canvas(outer, bg=T["bar_bg"], width=140, height=14,
+                           highlightthickness=0, bd=0)
+        canvas.pack()
+        rect = canvas.create_rectangle(0, 0, 0, 14, fill=color, width=0)
         text_lbl = tk.Label(outer, text="— / —", bg=T["bg2"], fg=T["fg"],
                             font=("Consolas", 9))
         text_lbl.pack()
-        return {"outer": outer, "bg": bar_bg, "fill": bar_fill,
+        return {"outer": outer, "canvas": canvas, "rect": rect,
                 "text": text_lbl, "default_color": color, "label": hdr}
 
     def _update_bar(self, bar: dict, used, total, pct: float, unit: str) -> None:
@@ -196,8 +253,8 @@ class Header:
             color = (T["red"]    if pct > 0.9 else
                      T["orange"] if pct > 0.7 else
                      bar["default_color"])
-            bar["fill"].place(x=0, y=0, width=w, height=14)
-            bar["fill"].config(bg=color)
+            bar["canvas"].coords(bar["rect"], 0, 0, w, 14)
+            bar["canvas"].itemconfig(bar["rect"], fill=color)
             if unit == "%":
                 bar["text"].config(text=f"{pct * 100:.0f}%")
             elif unit in ("MiB", "GiB"):

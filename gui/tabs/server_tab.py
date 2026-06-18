@@ -102,6 +102,16 @@ class ServerTab:
         cbk(ef, "--slots",          self._state.slots_endpoint_var,
             "Expose slot state at /slots.")
 
+        sep(sf, T)
+
+        # ── Logging ───────────────────────────────────────────────────────────
+        section(sf, "LOGGING", T)
+        lf = tk.Frame(sf, bg=sf.cget("bg"))
+        lf.pack(fill="x", padx=12, pady=4)
+        cbk(lf, "-v  Verbose log",  self._state.verbose_log_var,
+            "Enable verbose llama-server output (-v). Generates thousands of lines "
+            "per minute — leave off unless debugging. Off by default.")
+
     def _scrollable_frame(self) -> tk.Frame:
         T = self._T
         canvas = tk.Canvas(self._frame, bg=T["bg2"], highlightthickness=0)
@@ -113,9 +123,6 @@ class ServerTab:
         win = canvas.create_window((0, 0), window=sf, anchor="nw")
         sf.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
-        canvas.bind("<Enter>",
-            lambda e: self._frame.winfo_toplevel().bind_all(
-                "<MouseWheel>", lambda ev: canvas.yview_scroll(-1 if ev.delta > 0 else 1, "units")))
-        canvas.bind("<Leave>",
-            lambda e: self._frame.winfo_toplevel().unbind_all("<MouseWheel>"))
+        canvas.bind("<MouseWheel>",
+            lambda ev: canvas.yview_scroll(-1 if ev.delta > 0 else 1, "units"))
         return sf

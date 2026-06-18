@@ -4,6 +4,7 @@ AppState holds all tk.Var instances and live process state.
 All other GUI modules receive a reference to AppState.
 """
 from __future__ import annotations
+import collections
 import subprocess
 import threading
 import tkinter as tk
@@ -24,7 +25,9 @@ from gui.themes    import get as get_theme, THEME_LABELS, DEFAULT_THEME
 
 LogFn = Callable[[str, str | None], None]
 
-_MAX_LOG_BUFFER = 3000
+_MAX_LOG_BUFFER  = 3000   # deque maxlen — auto-evicts oldest entries
+_MAX_LOG_LINES   = 5000   # hard cap on lines in the Text widget
+_LOG_TRIM_EVERY  = 100    # check Text widget line count every N inserts
 
 
 def _ts_to_pct(ts: str) -> int:
@@ -62,6 +65,7 @@ class AppState:
         self._scroll_paused  = False
         self._rebuilding     = False
         self.model_size_gb: float = 0.0   # updated by LeftPanel on model select
+        self.monitor: "Monitor | None" = None  # set by LlamaApp._start_services
 
         # ── Server / Model vars ────────────────────────────────────────────────
         self.model_var              = tk.StringVar()
@@ -69,6 +73,12 @@ class AppState:
         self.llama_bin_var          = tk.StringVar(value=settings.llama_bin or DEFAULT_FORKS[0]["bin_rel"])
         self.port_var               = tk.StringVar(value=str(DEFAULT_PROFILE["port"]))
         self.api_key_server_var     = tk.StringVar()
+
+        # Plain-string mirrors of the above — safe to read from background threads.
+        # Kept in sync via trace_add("write", ...) which always fires on main thread.
+        self._cached_model_name: str = ""
+        self._cached_port:       str = str(DEFAULT_PROFILE["port"])
+        self._cached_api_key:    str = ""
         self.parallel_var           = tk.IntVar(value=DEFAULT_PROFILE["parallel"])
         self.cont_batching_var      = tk.BooleanVar(value=DEFAULT_PROFILE["cont_batching"])
         self.embeddings_var         = tk.BooleanVar(value=DEFAULT_PROFILE["embeddings"])
@@ -103,6 +113,8 @@ class AppState:
         self.main_gpu_var           = tk.IntVar(value=DEFAULT_PROFILE["main_gpu"])
         self.no_display_prompt_var  = tk.BooleanVar(value=DEFAULT_PROFILE["no_display_prompt"])
         self.jinja_var              = tk.BooleanVar(value=DEFAULT_PROFILE["jinja"])
+        self.reasoning_off_var      = tk.BooleanVar(value=DEFAULT_PROFILE["reasoning_off"])
+        self.disable_cuda_graphs_var = tk.BooleanVar(value=DEFAULT_PROFILE["disable_cuda_graphs"])
         self.extra_flags_var        = tk.StringVar()
 
         # ── Sampling vars ──────────────────────────────────────────────────────
@@ -132,6 +144,10 @@ class AppState:
         self.cache_reuse_en_var     = tk.BooleanVar(value=DEFAULT_PROFILE["flag_cache_reuse"])
         self.cache_reuse_n_var      = tk.StringVar(value=str(DEFAULT_PROFILE["flag_cache_reuse_n"]))
 
+        # ── MoE vars ───────────────────────────────────────────────────────────
+        self.override_expert_count_en_var = tk.BooleanVar(value=DEFAULT_PROFILE["override_expert_count"])
+        self.override_expert_count_var    = tk.StringVar(value=str(DEFAULT_PROFILE["override_expert_count_n"]))
+
         # ── Speculative decoding vars ──────────────────────────────────────────
         self.spec_mtp_var           = tk.BooleanVar(value=DEFAULT_PROFILE["flag_spec_mtp"])
         self.spec_draft_n_en_var    = tk.BooleanVar(value=DEFAULT_PROFILE["flag_spec_draft_n"])
@@ -139,7 +155,8 @@ class AppState:
         self.prio_draft_en_var      = tk.BooleanVar(value=DEFAULT_PROFILE["flag_prio_draft"])
         self.prio_draft_level_var   = tk.StringVar(value=str(DEFAULT_PROFILE["flag_prio_draft_level"]))
 
-        # ── WSL / misc vars ────────────────────────────────────────────────────
+        # ── Server output / misc vars ──────────────────────────────────────────
+        self.verbose_log_var        = tk.BooleanVar(value=False)
         self.wsl_memory_var         = tk.StringVar(value=settings.wsl_memory)
         self.proxy_bypass_var       = tk.BooleanVar(value=settings.proxy_bypass)
         self.cuda_swap_var          = tk.BooleanVar(value=settings.cuda_swap)
@@ -190,10 +207,14 @@ class AppState:
             "cpu_moe":              self.cpu_moe_var.get(),
             "n_cpu_moe":            self.n_cpu_moe_en_var.get(),
             "n_cpu_moe_n":          self.n_cpu_moe_var.get(),
+            "override_expert_count":   self.override_expert_count_en_var.get(),
+            "override_expert_count_n": self.override_expert_count_var.get(),
             "no_warmup":            self.no_warmup_var.get(),
             "tokenizer_config":     self.tokenizer_config_var.get() if self.tokenizer_config_en_var.get() else "",
             "no_display_prompt":    self.no_display_prompt_var.get(),
             "jinja":                self.jinja_var.get(),
+            "reasoning_off":        self.reasoning_off_var.get(),
+            "disable_cuda_graphs":  self.disable_cuda_graphs_var.get(),
             "tensor_split":         self.tensor_split_var.get(),
             "main_gpu":             self.main_gpu_var.get(),
             "extra_flags":          self.extra_flags_var.get(),
@@ -209,6 +230,7 @@ class AppState:
             "flag_spec_draft_n_max":self.spec_draft_n_var.get(),
             "flag_prio_draft":      self.prio_draft_en_var.get(),
             "flag_prio_draft_level":self.prio_draft_level_var.get(),
+            "verbose_log":          self.verbose_log_var.get(),
         }
 
     def apply_profile_dict(self, p: dict) -> None:
@@ -256,12 +278,16 @@ class AppState:
         self.cpu_moe_var.set(p.get("cpu_moe", False))
         self.n_cpu_moe_en_var.set(p.get("n_cpu_moe", False))
         self.n_cpu_moe_var.set(str(p.get("n_cpu_moe_n", "4")))
+        self.override_expert_count_en_var.set(p.get("override_expert_count", False))
+        self.override_expert_count_var.set(str(p.get("override_expert_count_n", "2")))
         self.no_warmup_var.set(p.get("no_warmup", False))
         tc = p.get("tokenizer_config", "")
         self.tokenizer_config_en_var.set(bool(tc.strip()))
         self.tokenizer_config_var.set(tc)
         self.no_display_prompt_var.set(p.get("no_display_prompt", False))
         self.jinja_var.set(p.get("jinja", False))
+        self.reasoning_off_var.set(p.get("reasoning_off", False))
+        self.disable_cuda_graphs_var.set(p.get("disable_cuda_graphs", False))
         ts = p.get("tensor_split", "")
         # Update pct_var BEFORE en_var so the trace-on-enable sees the correct pct
         self.tensor_split_en_var.set(False)
@@ -284,6 +310,7 @@ class AppState:
         self.spec_draft_n_var.set(str(p.get("flag_spec_draft_n_max", "2")))
         self.prio_draft_en_var.set(p.get("flag_prio_draft", False))
         self.prio_draft_level_var.set(str(p.get("flag_prio_draft_level", "2")))
+        self.verbose_log_var.set(p.get("verbose_log", False))
 
     def build_cmd(self) -> str:
         label = self.llama_bin_var.get()
@@ -464,18 +491,36 @@ class LlamaApp:
         from gui.tabs.agents_tab    import AgentsTab
         from gui.tabs.optimizer_tab import OptimizerTab
 
+        # Server and Load are built immediately (always needed).
+        # The rest are lazy — built on first selection to save startup RAM/CPU.
         tabs = [
-            ("Server",    ServerTab),
-            ("Load",      ModelTab),
-            ("Sampling",  SamplingTab),
-            ("Advanced",  AdvancedTab),
-            ("Agents",    AgentsTab),
-            ("Optimizer", OptimizerTab),
+            ("Server",    ServerTab,    True),
+            ("Load",      ModelTab,     True),
+            ("Sampling",  SamplingTab,  False),
+            ("Advanced",  AdvancedTab,  False),
+            ("Agents",    AgentsTab,    False),
+            ("Optimizer", OptimizerTab, False),
         ]
-        for label, TabClass in tabs:
+        self._lazy_tab_builders: dict[int, tuple] = {}
+        for idx, (label, TabClass, eager) in enumerate(tabs):
             frame = tk.Frame(self.notebook, bg=self.T["bg2"])
             self.notebook.add(frame, text=label)
-            TabClass(frame, self.state, self.T, log_fn=self._log).build()
+            if eager:
+                TabClass(frame, self.state, self.T, log_fn=self._log).build()
+            else:
+                self._lazy_tab_builders[idx] = (TabClass, frame)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    def _on_tab_changed(self, event=None) -> None:
+        try:
+            idx = self.notebook.index("current")
+        except Exception:
+            return
+        if idx in self._lazy_tab_builders:
+            TabClass, frame = self._lazy_tab_builders.pop(idx)
+            # Defer one tick so tkinter renders the empty tab frame first,
+            # giving immediate visual feedback before the synchronous build.
+            self.root.after(1, lambda: TabClass(frame, self.state, self.T, log_fn=self._log).build())
 
     def _build_log_panel(self):
         T = self.T
@@ -548,8 +593,11 @@ class LlamaApp:
         self.log_box.tag_config("info",    foreground=T["accent"])
         self.log_box.tag_config("hermes",  foreground=T["yellow"])
 
-        # ── Log buffer (for filter replay) ───────────────────────────────────
-        self._log_buffer: list[tuple[str, str | None]] = []
+        # ── Log buffer (deque auto-evicts oldest at maxlen) ───────────────────
+        self._log_buffer: collections.deque[tuple[str, str | None]] = \
+            collections.deque(maxlen=_MAX_LOG_BUFFER)
+        self._log_insert_count = 0
+        self._log_filter_after_id: str | None = None
 
         # ── Log filter entry ──────────────────────────────────────────────────
         filter_row = tk.Frame(self._log_pane, bg=T["bg2"])
@@ -601,6 +649,7 @@ class LlamaApp:
             self._monitor = Monitor(s.wsl_distro, s.wsl_user)
             self._monitor.register(self._on_monitor_snapshot)
             self._monitor.start()
+            self.state.monitor = self._monitor
 
         # Server controller
         self.state.server_ctrl = ServerController(
@@ -612,12 +661,24 @@ class LlamaApp:
             tps_fn    = self._on_tps,
         )
 
-        # Health checker
+        # Keep plain-string mirrors in sync via traces (traces fire on main thread)
+        st = self.state
+        st.model_var.trace_add(
+            "write", lambda *_: st.__dict__.update(
+                {"_cached_model_name": st.model_var.get().split("/")[-1]}))
+        st.port_var.trace_add(
+            "write", lambda *_: st.__dict__.update(
+                {"_cached_port": st.port_var.get()}))
+        st.api_key_server_var.trace_add(
+            "write", lambda *_: st.__dict__.update(
+                {"_cached_api_key": st.api_key_server_var.get()}))
+
+        # Health checker — lambdas read plain strings, safe from background thread
         self._health = HealthChecker(
-            port_fn    = lambda: self.state.port_var.get(),
-            api_key_fn = lambda: self.state.api_key_server_var.get(),
+            port_fn    = lambda: self.state._cached_port,
+            api_key_fn = lambda: self.state._cached_api_key,
             status_fn  = self._on_server_status,
-            model_fn   = lambda: self.state.model_var.get(),
+            model_fn   = lambda: self.state._cached_model_name,
             log_fn     = self._log,
             skip_fn    = lambda: (
                 self.state.server_ctrl is not None and
@@ -625,6 +686,15 @@ class LlamaApp:
             ),
         )
         self._health.start()
+
+        # Token / context monitor — reads cached port + key, no tokenizer needed
+        from core.metrics import TokenMonitor
+        self._token_monitor = TokenMonitor(
+            port_fn    = lambda: self.state._cached_port,
+            api_key_fn = lambda: self.state._cached_api_key,
+        )
+        self._token_monitor.register(self._on_token_stats)
+        self._token_monitor.start()
 
         # Restore last profile
         last = s.last_profile
@@ -640,6 +710,10 @@ class LlamaApp:
     def _on_monitor_snapshot(self, snap: MonitorSnapshot) -> None:
         if hasattr(self, "header"):
             self._safe_after(lambda s=snap: self.header.update_stats(s))
+
+    def _on_token_stats(self, st) -> None:
+        if hasattr(self, "header"):
+            self._safe_after(lambda s=st: self.header.update_tokens(s))
 
     def _on_server_status(self, state: str, model: str) -> None:
         if hasattr(self, "header"):
@@ -664,7 +738,7 @@ class LlamaApp:
             if agent.get("auto_sync_model") and agent.get("enabled"):
                 agents_core.sync_model(
                     agent,
-                    model_name = self.state.alias_var.get() or self.state.model_var.get(),
+                    model_name = self.state.alias_var.get() or self.state.model_var.get().split("/")[-1],
                     base_url   = f"http://localhost:{self.state.port_var.get()}/v1"
                         if self.state.proxy_bypass_var.get()
                         else "http://localhost:8088/v1",
@@ -680,14 +754,19 @@ class LlamaApp:
     def _log(self, text: str, tag: str | None = None) -> None:
         def _do():
             try:
-                self._log_buffer.append((text, tag))
-                if len(self._log_buffer) > _MAX_LOG_BUFFER:
-                    del self._log_buffer[:-_MAX_LOG_BUFFER]
+                self._log_buffer.append((text, tag))   # deque auto-evicts at maxlen
                 q = self._log_filter_var.get().strip().lower()
                 if q and q not in text.lower():
                     return
                 self.log_box.config(state="normal")
                 self.log_box.insert(tk.END, text + "\n", tag or "")
+                # Periodically trim the Text widget to prevent unbounded RAM growth
+                self._log_insert_count += 1
+                if self._log_insert_count >= _LOG_TRIM_EVERY:
+                    self._log_insert_count = 0
+                    end_line = int(self.log_box.index("end-1c").split(".")[0])
+                    if end_line > _MAX_LOG_LINES:
+                        self.log_box.delete("1.0", f"{end_line - _MAX_LOG_LINES + 1}.0")
                 if not self.state._scroll_paused:
                     self.log_box.see(tk.END)
                 self.log_box.config(state="disabled")
@@ -710,6 +789,15 @@ class LlamaApp:
             pass
 
     def _apply_log_filter(self, *_) -> None:
+        if self._log_filter_after_id:
+            try:
+                self.root.after_cancel(self._log_filter_after_id)
+            except Exception:
+                pass
+        self._log_filter_after_id = self.root.after(300, self._do_apply_log_filter)
+
+    def _do_apply_log_filter(self) -> None:
+        self._log_filter_after_id = None
         try:
             q = self._log_filter_var.get().strip().lower()
             self.log_box.config(state="normal")

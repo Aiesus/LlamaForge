@@ -3,7 +3,10 @@ Left panel — model list (Treeview), server controls, profiles, download button
 """
 from __future__ import annotations
 import os
+import queue
 import re
+import subprocess
+import threading
 from pathlib import Path
 from tkinter import ttk, messagebox, simpledialog
 import tkinter as tk
@@ -95,11 +98,6 @@ def _fmt_size(size_b: int) -> str:
     return f"{size_b / 1024**2:.0f} MB"
 
 
-# ── Column header labels (base text without sort arrow) ───────────────────────
-
-_HDR = {"name": "Name", "size": "Size", "params": "Params", "quant": "Quant"}
-
-
 class LeftPanel:
 
     def __init__(self, root: tk.Tk, state: AppState, T: dict, log_fn: LogFn):
@@ -109,33 +107,25 @@ class LeftPanel:
         self._log    = log_fn
         self._frame: tk.Frame | None = None
 
-        # Model data
-        self._all_models:  list[str]       = []
-        self._model_meta:  dict[str, dict] = {}
-        self._model_sizes: dict[str, int]  = {}
-
-        # Sort state — default: largest files first
-        self._sort_col = "size"
-        self._sort_rev = True
+        # Model data — keyed by full WSL path (e.g. ~/llama.cpp/models/foo.gguf)
+        self._all_models:    list[str]       = []
+        self._model_meta:    dict[str, dict] = {}
+        self._model_sizes:   dict[str, int]  = {}
+        self._model_lib_map: dict[str, str]  = {}  # full_wsl_path → lib_wsl_base
 
     def build(self, frame: tk.Frame) -> None:
         T = self._T
         self._frame = frame
-        self._frame.columnconfigure(0, weight=1)
-        self._frame.rowconfigure(0, weight=1)
 
-        # Left column: model treeview (expands to fill)
-        self._tree_col = tk.Frame(self._frame, bg=T["bg2"])
-        self._tree_col.grid(row=0, column=0, sticky="nsew")
-
-        # Vertical separator
-        tk.Frame(self._frame, bg=T["bg3"], width=1).grid(row=0, column=1, sticky="ns")
-
-        # Right column: server controls, profiles, download (fixed width from content)
-        self._ctrl_col = tk.Frame(self._frame, bg=T["bg2"])
-        self._ctrl_col.grid(row=0, column=2, sticky="nsew")
+        # Single column: model dropdown on top, then server / profiles / tools.
+        # (The old two-column tree|controls split is gone now that the model
+        # picker is a compact dropdown instead of a full-height treeview.)
+        self._col = tk.Frame(self._frame, bg=T["bg2"])
+        self._col.pack(fill="both", expand=True)
+        self._tree_col = self._ctrl_col = self._col
 
         self._build_models_section()
+        _sep(self._ctrl_col, T)
         self._build_server_section()
         _sep(self._ctrl_col, T)
         self._build_profiles_section()
@@ -146,10 +136,16 @@ class LeftPanel:
 
     def update_server_status(self, state: str) -> None:
         try:
-            running = state == "running"
-            loading = state == "loading"
-            self._load_btn.config(state="disabled" if loading else "normal")
-            self._unload_btn.config(state="normal" if (running or loading) else "disabled")
+            T = self._T
+            if state == "running":
+                self._server_btn.config(text="■  Unload", bg=T["red"],
+                                        fg=T["bg"], state="normal")
+            elif state == "loading":
+                self._server_btn.config(text="⏳  Loading…", bg=T["yellow"],
+                                        fg=T["bg"], state="disabled")
+            else:  # stopped / error / crashed / unknown
+                self._server_btn.config(text="▶  Load Model", bg=T["green"],
+                                        fg=T["bg"], state="normal")
         except Exception:
             pass
 
@@ -157,219 +153,213 @@ class LeftPanel:
 
     def _build_models_section(self) -> None:
         T = self._T
-        _section(self._tree_col, "MODELS", T)
+        _section(self._col, "MODEL", T)
 
-        # Search box
-        search_frame = tk.Frame(self._tree_col, bg=T["bg2"])
-        search_frame.pack(fill="x", padx=8, pady=(0, 4))
-        self._search_var = tk.StringVar()
-        self._search_var.trace_add("write", lambda *_: self._filter_models())
-        self._search_entry = tk.Entry(
-            search_frame, textvariable=self._search_var,
-            bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
-            font=("Consolas", 9), insertbackground=T["fg"],
+        # display string ↔ full WSL path
+        self._display_to_path: dict[str, str] = {}
+        self._all_displays:    list[str]      = []
+
+        # Editable combobox = compact picker + type-ahead filter.
+        self._model_combo = ttk.Combobox(
+            self._col, state="normal", font=("Segoe UI", 9),
         )
-        self._search_entry.pack(fill="x")
-        self._search_entry.bind("<FocusIn>",  lambda e: self._on_search_focus_in())
-        self._search_entry.bind("<FocusOut>", lambda e: self._on_search_focus_out())
-        self._search_placeholder = True
-        self._show_search_placeholder()
+        self._model_combo.pack(fill="x", padx=8, pady=(0, 2))
+        self._model_combo.bind("<<ComboboxSelected>>", self._on_combo_select)
+        self._model_combo.bind("<KeyRelease>", self._on_combo_key)
+        ToolTip(self._model_combo,
+                "Pick a model to select it. Type to filter the list.")
 
-        # Treeview + scrollbar
-        self._apply_tree_style(T)
-        tree_frame = tk.Frame(self._tree_col, bg=T["bg2"])
-        tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 2))
-
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
-        vsb.pack(side="right", fill="y")
-
-        self._model_tree = ttk.Treeview(
-            tree_frame,
-            columns=("name", "size", "params", "quant"),
-            show="headings",
-            selectmode="browse",
-            style="Models.Treeview",
-            yscrollcommand=vsb.set,
-        )
-        vsb.config(command=self._model_tree.yview)
-        self._model_tree.pack(fill="both", expand=True)
-
-        # Column geometry
-        self._model_tree.column("name",   width=172, minwidth=100, stretch=True,  anchor="w")
-        self._model_tree.column("size",   width=68,  minwidth=55,  stretch=False, anchor="e")
-        self._model_tree.column("params", width=50,  minwidth=40,  stretch=False, anchor="center")
-        self._model_tree.column("quant",  width=74,  minwidth=60,  stretch=False, anchor="center")
-
-        # Headings with sort callbacks
-        for col in ("name", "size", "params", "quant"):
-            arrow = (" ▼" if self._sort_rev else " ▲") if col == self._sort_col else ""
-            self._model_tree.heading(
-                col, text=_HDR[col] + arrow,
-                command=lambda c=col: self._sort_by(c),
-            )
-
-        # Tier colour tags (foreground only — selection background still works)
-        self._model_tree.tag_configure("lossless", foreground=T["accent"])
-        self._model_tree.tag_configure("high",     foreground=T["green"])
-        self._model_tree.tag_configure("balanced", foreground=T["fg"])
-        self._model_tree.tag_configure("low",      foreground=T["yellow"])
-        self._model_tree.tag_configure("vlow",     foreground=T["orange"])
-
-        self._model_tree.bind("<<TreeviewSelect>>", self._on_model_select)
-
-        tk.Button(
-            self._tree_col, text="⟳ Refresh", bg=T["btn"], fg=T["btn_fg"],
+        btn_row = tk.Frame(self._col, bg=T["bg2"])
+        btn_row.pack(fill="x", padx=8, pady=3)
+        self._refresh_btn = tk.Button(
+            btn_row, text="⟳ Refresh", bg=T["btn"], fg=T["btn_fg"],
             relief="flat", cursor="hand2", font=("Segoe UI", 9),
             command=self.refresh_models,
-        ).pack(fill="x", padx=8, pady=3)
+        )
+        self._refresh_btn.pack(side="left", expand=True, fill="x", padx=(0, 2))
+        tk.Button(
+            btn_row, text="⊞ Libraries", bg=T["btn"], fg=T["btn_fg"],
+            relief="flat", cursor="hand2", font=("Segoe UI", 9),
+            command=self._open_library_manager,
+        ).pack(side="left", expand=True, fill="x", padx=(2, 0))
+
+        # Queue-based scan result delivery — safe for background threads on Windows.
+        # The background thread puts results here; the main-thread polling loop reads them.
+        self._scan_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._scan_id: int = 0
+        self._root.after(200, self._drain_scan_results)  # start persistent poll (main thread)
 
         self.refresh_models()
 
-    def _apply_tree_style(self, T: dict) -> None:
-        style = ttk.Style()
-        style.configure("Models.Treeview",
-                        background=T["bg3"],
-                        fieldbackground=T["bg3"],
-                        foreground=T["fg"],
-                        rowheight=22,
-                        font=("Consolas", 9),
-                        borderwidth=0,
-                        relief="flat")
-        style.configure("Models.Treeview.Heading",
-                        background=T["bg2"],
-                        foreground=T["fg2"],
-                        font=("Segoe UI", 8, "bold"),
-                        relief="flat",
-                        borderwidth=1)
-        style.map("Models.Treeview",
-                  background=[("selected", T["select_bg"])],
-                  foreground=[("selected", T["select_fg"])])
-        style.map("Models.Treeview.Heading",
-                  background=[("active", T["bg3"])],
-                  foreground=[("active", T["accent"])])
+    # ── Dropdown population / filtering ─────────────────────────────────────────
 
-    def refresh_models(self) -> None:
-        unc = self._state.settings.models_unc
-        if not unc:
-            self._log("[WARN] Models path not configured — run setup.", "warn")
-            return
-        try:
-            entries = os.listdir(unc)
-            self._all_models = sorted(
-                f for f in entries if f.lower().endswith(".gguf")
-            )
-        except Exception as e:
-            self._all_models = []
-            self._log(f"[WARN] Could not scan models: {e}", "warn")
+    def _model_display(self, full_wsl: str) -> str:
+        meta  = self._model_meta.get(full_wsl, {})
+        fname = full_wsl.split("/")[-1]
+        base  = meta.get("display", fname)
+        quant = meta.get("quant", "") or "?"
+        size  = _fmt_size(self._model_sizes.get(full_wsl, 0))
+        return f"{base}  ·  {quant}  ·  {size}"
 
-        self._model_meta  = {f: _parse_gguf(f) for f in self._all_models}
-        self._model_sizes = {}
-        for fname in self._all_models:
-            try:
-                self._model_sizes[fname] = (Path(unc) / fname).stat().st_size
-            except Exception:
-                self._model_sizes[fname] = 0
+    def _populate_combo(self, models: list[str] | None = None) -> None:
+        models = self._all_models if models is None else models
+        ordered = sorted(
+            models,
+            key=lambda p: self._model_meta.get(p, {})
+                              .get("display", p.split("/")[-1]).lower(),
+        )
 
-        self._populate_tree(self._all_models)
-        self._log(f"[INFO] Found {len(self._all_models)} model(s)", "info")
+        self._display_to_path = {}
+        displays: list[str] = []
+        for p in ordered:
+            disp = self._model_display(p)
+            if disp in self._display_to_path:          # same name+quant+size in 2 libs
+                lib = self._model_lib_map.get(p, "")
+                disp = f"{disp}  [{lib.split('/')[-1]}]"
+            self._display_to_path[disp] = p
+            displays.append(disp)
 
-    def _sort_by(self, col: str) -> None:
-        if self._sort_col == col:
-            self._sort_rev = not self._sort_rev
-        else:
-            self._sort_col = col
-            self._sort_rev = False
-        # Update heading arrows
-        for c in ("name", "size", "params", "quant"):
-            arrow = (" ▼" if self._sort_rev else " ▲") if c == self._sort_col else ""
-            self._model_tree.heading(c, text=_HDR[c] + arrow)
-        self._filter_models()
+        self._all_displays = displays
+        self._model_combo["values"] = displays
 
-    def _sort_key(self, fname: str):
-        m = self._model_meta.get(fname, {})
-        if self._sort_col == "name":
-            return m.get("display", fname).lower()
-        if self._sort_col == "size":
-            return self._model_sizes.get(fname, 0)
-        if self._sort_col == "params":
-            return m.get("params_b", 0.0)
-        if self._sort_col == "quant":
-            return {"lossless": 0, "high": 1, "balanced": 2, "low": 3, "vlow": 4}.get(
-                m.get("tier", "balanced"), 2)
-        return fname.lower()
-
-    def _filter_models(self) -> None:
-        if not hasattr(self, "_model_tree"):
-            return
-        q = self._search_var.get().strip().lower()
-        if self._search_placeholder or not q:
-            self._populate_tree(self._all_models)
-        else:
-            hits = [
-                f for f in self._all_models
-                if q in f.lower()
-                or q in self._model_meta.get(f, {}).get("display", "").lower()
-                or q in self._model_meta.get(f, {}).get("quant", "").lower()
-            ]
-            self._populate_tree(hits)
-
-    def _populate_tree(self, models: list[str]) -> None:
+        # Restore selection (exact full-path or legacy bare-filename match), else
+        # auto-select the first model.
         current = self._state.model_var.get()
-        sorted_models = sorted(models, key=self._sort_key, reverse=self._sort_rev)
+        match = next(
+            ((d, p) for d, p in self._display_to_path.items()
+             if p == current or p.split("/")[-1] == current),
+            None,
+        )
+        if match is None and displays:
+            match = (displays[0], self._display_to_path[displays[0]])
 
-        self._model_tree.delete(*self._model_tree.get_children())
+        if match:
+            disp, path = match
+            self._model_combo.set(disp)
+            if self._state.model_var.get() != path:
+                self._state.model_var.set(path)        # upgrade bare → full path
+            size_b = self._model_sizes.get(path, 0)
+            self._state.model_size_gb = size_b / 1e9 if size_b else 0.0
+        else:
+            self._model_combo.set("")
 
-        select_iid = None
-        for fname in sorted_models:
-            meta   = self._model_meta.get(fname, {})
-            size_b = self._model_sizes.get(fname, 0)
-            self._model_tree.insert(
-                "", tk.END,
-                iid=fname,
-                values=(
-                    meta.get("display", fname),
-                    _fmt_size(size_b),
-                    meta.get("params_str", ""),
-                    meta.get("quant", ""),
-                ),
-                tags=(meta.get("tier", "balanced"),),
-            )
-            if fname == current:
-                select_iid = fname
+    def _on_combo_key(self, event) -> None:
+        if event.keysym in ("Up", "Down", "Return", "Escape", "Tab", "Left", "Right"):
+            return
+        typed = self._model_combo.get().strip().lower()
+        if not typed:
+            self._model_combo["values"] = self._all_displays
+            return
+        hits = [d for d in self._all_displays
+                if typed in d.lower()
+                or typed in self._display_to_path.get(d, "").split("/")[-1].lower()]
+        self._model_combo["values"] = hits or self._all_displays
 
-        if select_iid:
-            self._model_tree.selection_set(select_iid)
-            self._model_tree.see(select_iid)
-        elif sorted_models:
-            first = sorted_models[0]
-            self._model_tree.selection_set(first)
-            self._state.model_var.set(first)
-
-    def _on_model_select(self, event=None) -> None:
-        sel = self._model_tree.selection()
-        if sel:
-            fname = sel[0]
-            self._state.model_var.set(fname)
-            size_b = self._model_sizes.get(fname, 0)
+    def _on_combo_select(self, event=None) -> None:
+        path = self._display_to_path.get(self._model_combo.get())
+        if path:
+            self._state.model_var.set(path)
+            size_b = self._model_sizes.get(path, 0)
             self._state.model_size_gb = size_b / 1e9 if size_b else 0.0
 
-    # ── Search placeholder ────────────────────────────────────────────────────
+    def refresh_models(self) -> None:
+        """
+        Scan model libraries asynchronously so WSL filesystem latency never
+        blocks the main thread. Shows a placeholder row while scanning.
+        """
+        s    = self._state.settings
+        libs = s.all_library_uncs
 
-    def _show_search_placeholder(self) -> None:
-        self._search_entry.config(fg=self._T["fg2"])
-        self._search_entry.delete(0, tk.END)
-        self._search_entry.insert(0, "Filter models…")
+        if not libs:
+            unc = s.models_unc
+            if unc:
+                libs = [(s.models_wsl, unc)]
+            else:
+                self._log("[WARN] No model libraries configured — run setup.", "warn")
+                return
 
-    def _on_search_focus_in(self) -> None:
-        if self._search_placeholder:
-            self._search_entry.config(fg=self._T["entry_fg"])
-            self._search_entry.delete(0, tk.END)
-            self._search_placeholder = False
+        # Show placeholder immediately so the UI isn't empty
+        try:
+            self._model_combo.set("Scanning libraries…")
+            self._model_combo["values"] = []
+            self._refresh_btn.config(state="disabled")
+        except Exception:
+            pass
 
-    def _on_search_focus_out(self) -> None:
-        if not self._search_var.get().strip():
-            self._search_placeholder = True
-            self._show_search_placeholder()
+        # Stamp each scan so stale results from a previous scan are discarded
+        self._scan_id += 1
+        current_id    = self._scan_id
+        libs_snapshot = list(libs)   # capture before thread starts
+
+        def _scan() -> None:
+            all_models:    list[str]       = []
+            model_meta:    dict[str, dict] = {}
+            model_sizes:   dict[str, int]  = {}
+            model_lib_map: dict[str, str]  = {}
+
+            for lib_wsl, lib_unc in libs_snapshot:
+                try:
+                    # scandir gives DirEntry objects whose .stat() is cached from
+                    # the directory read — one WSL round-trip instead of N+1
+                    with os.scandir(lib_unc) as it:
+                        for entry in it:
+                            if not entry.name.lower().endswith(".gguf"):
+                                continue
+                            full_wsl = f"{lib_wsl}/{entry.name}"
+                            all_models.append(full_wsl)
+                            model_meta[full_wsl]    = _parse_gguf(entry.name)
+                            model_lib_map[full_wsl] = lib_wsl
+                            try:
+                                model_sizes[full_wsl] = entry.stat().st_size
+                            except Exception:
+                                model_sizes[full_wsl] = 0
+                except Exception as e:
+                    self._log(f"[WARN] Cannot scan {lib_wsl}: {e}", "warn")
+
+            n_libs = len(libs_snapshot)
+            # Queue put is thread-safe; _drain_scan_results() delivers on main thread
+            self._scan_queue.put(
+                (current_id, all_models, model_meta, model_sizes, model_lib_map, n_libs)
+            )
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _drain_scan_results(self) -> None:
+        """Persistent main-thread polling loop — delivers background scan results safely."""
+        try:
+            while True:
+                scan_id, *args = self._scan_queue.get_nowait()
+                if scan_id == self._scan_id:   # ignore results from superseded scans
+                    self._on_scan_complete(*args)
+        except queue.Empty:
+            pass
+        self._root.after(200, self._drain_scan_results)  # reschedule unconditionally
+
+    def _on_scan_complete(self, all_models: list[str], model_meta: dict,
+                          model_sizes: dict, model_lib_map: dict,
+                          n_libs: int) -> None:
+        """Called on the main thread once the background scan finishes."""
+        self._all_models    = all_models
+        self._model_meta    = model_meta
+        self._model_sizes   = model_sizes
+        self._model_lib_map = model_lib_map
+
+        self._populate_combo()
+
+        self._log(
+            f"[INFO] Found {len(all_models)} model(s) across "
+            f"{n_libs} librar{'y' if n_libs == 1 else 'ies'}",
+            "info",
+        )
+        try:
+            self._refresh_btn.config(state="normal")
+        except Exception:
+            pass
+
+    def _open_library_manager(self) -> None:
+        from gui.library_manager import LibraryManager
+        LibraryManager(self._root, self._state, self._T,
+                       on_close=self.refresh_models, log_fn=self._log).show()
 
     # ── Server controls ───────────────────────────────────────────────────────
 
@@ -377,21 +367,22 @@ class LeftPanel:
         T = self._T
         _section(self._ctrl_col, "LLAMA SERVER", T)
 
-        self._load_btn = tk.Button(
+        # One state-aware button: Load → Loading… → Unload (driven by
+        # update_server_status). The header shows status text separately.
+        self._server_btn = tk.Button(
             self._ctrl_col, text="▶  Load Model",
             bg=T["green"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 10, "bold"), pady=6,
-            command=self._load_model,
+            font=("Segoe UI", 10, "bold"), pady=5,
+            command=self._toggle_server,
         )
-        self._load_btn.pack(fill="x", padx=8, pady=3)
+        self._server_btn.pack(fill="x", padx=8, pady=3)
 
-        self._unload_btn = tk.Button(
-            self._ctrl_col, text="■  Unload",
-            bg=T["red"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 10, "bold"), pady=6, state="disabled",
-            command=self._unload_model,
-        )
-        self._unload_btn.pack(fill="x", padx=8, pady=3)
+    def _toggle_server(self) -> None:
+        ctrl = self._state.server_ctrl
+        if ctrl and ctrl.state == ServerState.RUNNING:
+            self._unload_model()
+        else:
+            self._load_model()
 
     def _load_model(self) -> None:
         model = self._state.model_var.get()
@@ -498,57 +489,40 @@ class LeftPanel:
     def _build_utilities_section(self) -> None:
         T = self._T
         _section(self._ctrl_col, "TOOLS", T)
-        tk.Button(
-            self._ctrl_col, text="🌐 llama UI",
-            bg=T["accent"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9, "bold"), pady=3,
-            command=self._open_llama_ui,
-        ).pack(fill="x", padx=8, pady=2)
-        proxy_btn = tk.Button(
-            self._ctrl_col, text="Restart Proxy",
-            bg=T["btn"], fg=T["btn_fg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9), pady=3,
-            command=self._restart_proxy,
-        )
-        proxy_btn.pack(fill="x", padx=8, pady=2)
-        ToolTip(proxy_btn,
-            "Restart the tool-proxy.py process in WSL.\n"
-            "Use this if Cline/extensions can't reach the model after a reload,\n"
-            "or if the proxy crashed. Reconnects :8088 → :8089.")
-
-        diag_btn = tk.Button(
-            self._ctrl_col, text="Diagnose",
-            bg=T["yellow"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9, "bold"), pady=3,
-            command=self._diagnose,
-        )
-        diag_btn.pack(fill="x", padx=8, pady=2)
-        ToolTip(diag_btn,
-            "Run connectivity checks and log results:\n"
-            "  • llama-server process running in WSL\n"
-            "  • Port 8089 listening\n"
-            "  • tool-proxy.py running\n"
-            "  • Proxy :8088 reachable\n"
-            "  • localhost:8089/health\n"
-            "  • WSL IP direct access")
-        tk.Button(
-            self._ctrl_col, text="Theme",
-            bg=T["btn"], fg=T["btn_fg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9), pady=3,
-            command=self._open_theme_picker,
-        ).pack(fill="x", padx=8, pady=2)
 
         from core.settings import CRASH_LOG
         has_crashes = CRASH_LOG.exists() and CRASH_LOG.stat().st_size > 0
-        self._crash_btn = tk.Button(
-            self._ctrl_col,
-            text="⚠ Crash Log" if has_crashes else "Crash Log",
-            bg=T["red"] if has_crashes else T["btn"],
-            fg=T["bg"] if has_crashes else T["btn_fg"],
-            relief="flat", cursor="hand2", font=("Segoe UI", 9), pady=3,
-            command=self._open_crash_log,
-        )
-        self._crash_btn.pack(fill="x", padx=8, pady=(2, 8))
+
+        row = tk.Frame(self._ctrl_col, bg=T["bg2"])
+        row.pack(fill="x", padx=8, pady=(2, 8))
+
+        def _icon(text, fg, cmd, tip, bg=None):
+            b = tk.Button(row, text=text, bg=bg or T["btn"], fg=fg,
+                          relief="flat", cursor="hand2",
+                          font=("Segoe UI", 12), pady=2, command=cmd)
+            b.pack(side="left", expand=True, fill="x", padx=1)
+            ToolTip(b, tip)
+            return b
+
+        _icon("🌐", T["accent"], self._open_llama_ui,
+              "Open the llama.cpp web UI in your browser.")
+        _icon("🔍", T["yellow"], self._diagnose,
+              "Diagnose — connectivity checks:\n"
+              "  • llama-server process running in WSL\n"
+              "  • Port 8089 listening\n"
+              "  • tool-proxy.py running\n"
+              "  • Proxy :8088 reachable\n"
+              "  • localhost:8089/health\n"
+              "  • WSL IP direct access")
+        _icon("♻", T["btn_fg"], self._restart_proxy,
+              "Restart the tool-proxy.py process in WSL.\n"
+              "Use this if Cline/extensions can't reach the model after a reload,\n"
+              "or if the proxy crashed. Reconnects :8088 → :8089.")
+        _icon("🎨", T["btn_fg"], self._open_theme_picker, "Change theme.")
+        self._crash_btn = _icon(
+            "⚠", T["bg"] if has_crashes else T["btn_fg"],
+            self._open_crash_log, "View the crash log.",
+            bg=T["red"] if has_crashes else T["btn"])
 
     def _open_llama_ui(self) -> None:
         import webbrowser
@@ -605,7 +579,7 @@ class LeftPanel:
                 txt.insert(tk.END, "(cleared)")
                 txt.config(state="disabled")
                 self._crash_btn.config(
-                    text="Crash Log", bg=T["btn"], fg=T["btn_fg"])
+                    text="⚠", bg=T["btn"], fg=T["btn_fg"])
             except Exception:
                 pass
 

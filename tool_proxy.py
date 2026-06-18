@@ -9,9 +9,9 @@ import json, re, uuid, asyncio
 import aiohttp
 from aiohttp import web
 
-BACKEND = "http://localhost:8089"
-PORT    = 8088
-HOST    = "0.0.0.0"
+BACKEND   = "http://localhost:8089"
+PORT      = 8088
+HOST      = "0.0.0.0"
 
 _TOOL_RES = [
     re.compile(r"<tools>\s*(.*?)\s*</tools>",         re.DOTALL),

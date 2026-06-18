@@ -157,6 +157,7 @@ class DownloadManager(tk.Toplevel):
         self._active_tree: ttk.Treeview | None = None
         self._active_repo: str = ""
         self._repo_sort: tuple[str, bool] = ("downloads", True)  # (col, reverse)
+        self._dest_lib_var = tk.StringVar()   # selected download library (WSL path)
 
         # Download queue
         self._queue: list[dict]  = []
@@ -366,6 +367,18 @@ class DownloadManager(tk.Toplevel):
     def _build_queue_panel(self, T: dict) -> None:
         outer = tk.Frame(self, bg=T["bg"])
         outer.pack(fill="x", padx=8, pady=(4, 8))
+
+        # Library selector row
+        lib_row = tk.Frame(outer, bg=T["bg"])
+        lib_row.pack(fill="x", pady=(0, 4))
+        tk.Label(lib_row, text="Save to:", bg=T["bg"], fg=T["fg2"],
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+        self._dest_lib_combo = ttk.Combobox(
+            lib_row, textvariable=self._dest_lib_var,
+            state="readonly", font=("Segoe UI", 9), width=42,
+        )
+        self._dest_lib_combo.pack(side="left")
+        self._refresh_lib_combo()
 
         btn_row = tk.Frame(outer, bg=T["bg"])
         btn_row.pack(fill="x", pady=(0, 4))
@@ -597,15 +610,27 @@ class DownloadManager(tk.Toplevel):
             daemon=True,
         ).start()
 
+    def _refresh_lib_combo(self) -> None:
+        s    = self._state.settings
+        libs = s.model_libraries
+        if not libs:
+            libs = [s.models_wsl] if s.models_wsl else []
+        self._dest_lib_combo["values"] = libs
+        if libs and self._dest_lib_var.get() not in libs:
+            self._dest_lib_var.set(libs[0])
+
     def _owned_files(self) -> set[str]:
-        try:
-            unc = self._state.settings.models_unc
-            if not unc:
-                return set()
-            return {p.name for p in Path(unc).iterdir()
-                    if p.suffix.lower() == ".gguf"}
-        except Exception:
-            return set()
+        """Filenames present in ANY configured library."""
+        s     = self._state.settings
+        owned = set()
+        libs  = s.all_library_uncs or [(s.models_wsl, s.models_unc)]
+        for _, lib_unc in libs:
+            try:
+                owned.update(p.name for p in Path(lib_unc).iterdir()
+                             if p.suffix.lower() == ".gguf")
+            except Exception:
+                pass
+        return owned
 
     def _browse_populate_files(self) -> None:
         q     = self._browse_file_filter_var.get().strip().lower()
@@ -711,7 +736,11 @@ class DownloadManager(tk.Toplevel):
         if not s.wsl_distro or not s.wsl_user:
             messagebox.showerror("Setup", "WSL not configured — run setup first.")
             return
-        if not s.models_unc:
+
+        # Determine destination library
+        dest_lib_wsl = self._dest_lib_var.get() or s.models_wsl
+        dest_unc     = s.wsl_path_to_unc(dest_lib_wsl)
+        if not dest_unc:
             messagebox.showerror("Setup", "Models path not configured.")
             return
 
@@ -731,7 +760,7 @@ class DownloadManager(tk.Toplevel):
             "filename":      filename,
             "repo":          repo,
             "url":           f"https://huggingface.co/{repo}/resolve/main/{filename}",
-            "dest_unc":      str(Path(s.models_unc) / filename),
+            "dest_unc":      str(Path(dest_unc) / filename),
             "expected_size": expected,
             "status":        "queued",
             "bytes_done":    0,

@@ -29,16 +29,25 @@ def run_root(distro: str, cmd: str, timeout: int = 30) -> subprocess.CompletedPr
 
 
 def stream(distro: str, user: str, cmd: str,
-           log_fn: LogFn, timeout: int = 600) -> int:
+           log_fn: LogFn, timeout: int = 600,
+           on_proc: Callable[[subprocess.Popen], None] | None = None) -> int:
     """
     Run a bash command in WSL, streaming each output line to log_fn.
     Returns the process exit code.
+
+    on_proc, if given, is called once with the live Popen handle right after
+    launch — lets a caller cancel the operation via proc.terminate().
     """
     proc = subprocess.Popen(
         ["wsl", "-d", distro, "-u", user, "bash", "-c", cmd],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1
     )
+    if on_proc:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
     try:
         for line in proc.stdout:
             log_fn(line.rstrip(), None)
@@ -50,10 +59,11 @@ def stream(distro: str, user: str, cmd: str,
 
 def stream_async(distro: str, user: str, cmd: str,
                  log_fn: LogFn, done_fn: Callable[[int], None] | None = None,
-                 timeout: int = 600) -> None:
+                 timeout: int = 600,
+                 on_proc: Callable[[subprocess.Popen], None] | None = None) -> None:
     """Run stream() on a daemon thread. Calls done_fn(returncode) when finished."""
     def _run():
-        rc = stream(distro, user, cmd, log_fn, timeout)
+        rc = stream(distro, user, cmd, log_fn, timeout, on_proc)
         if done_fn:
             done_fn(rc)
     threading.Thread(target=_run, daemon=True).start()
@@ -319,51 +329,60 @@ from pathlib import Path as _Path
 WSLCONFIG = _Path.home() / ".wslconfig"
 
 
-def read_wsl_memory() -> str:
-    """Return the memory= value from ~/.wslconfig, or 'not set'."""
+# Sanity cap: a real .wslconfig is well under this. A larger file means it was
+# corrupted (a past bug ballooned it to multiple GB) — don't try to parse it.
+_WSLCONFIG_MAX_BYTES = 64 * 1024
+
+
+def _parse_wslconfig() -> tuple[list[str], dict[str, dict[str, str]]]:
+    """Parse ~/.wslconfig into (section_order, {section: {key: value}}).
+    Ignores blank lines and comments. Returns empty on missing/corrupt file."""
+    order: list[str] = []
+    sections: dict[str, dict[str, str]] = {}
     try:
-        if WSLCONFIG.exists():
-            for line in WSLCONFIG.read_text().splitlines():
-                if line.strip().lower().startswith("memory"):
-                    return line.split("=", 1)[-1].strip()
+        if WSLCONFIG.exists() and WSLCONFIG.stat().st_size <= _WSLCONFIG_MAX_BYTES:
+            cur: str | None = None
+            for line in WSLCONFIG.read_text(encoding="utf-8", errors="ignore").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or s.startswith(";"):
+                    continue
+                if s.startswith("[") and s.endswith("]"):
+                    cur = s
+                    if cur not in sections:
+                        sections[cur] = {}
+                        order.append(cur)
+                    continue
+                if cur and "=" in s:
+                    k, v = s.split("=", 1)
+                    sections[cur][k.strip()] = v.strip()
     except Exception:
-        pass
-    return "not set"
+        return [], {}
+    return order, sections
+
+
+def read_wsl_memory() -> str:
+    """Return the memory= value from ~/.wslconfig [wsl2], or 'not set'."""
+    _, sections = _parse_wslconfig()
+    return sections.get("[wsl2]", {}).get("memory", "not set")
 
 
 def write_wsl_memory(mem: str) -> None:
-    """Write memory={mem} to ~/.wslconfig [wsl2] section. Raises on failure."""
-    lines: list[str] = []
-    if WSLCONFIG.exists():
-        lines = WSLCONFIG.read_text(encoding="utf-8").splitlines()
+    """Set memory={mem} under [wsl2] in ~/.wslconfig, rebuilding the file
+    cleanly (preserves other sections/keys, drops blanks/comments). Raises on
+    failure. Idempotent — cannot accumulate junk on repeated calls."""
+    order, sections = _parse_wslconfig()
 
-    in_wsl2    = False
-    mem_written = False
-    new_lines: list[str] = []
+    if "[wsl2]" not in sections:
+        sections["[wsl2]"] = {}
+        order.insert(0, "[wsl2]")
+    sections["[wsl2]"]["memory"] = mem
 
-    for line in lines:
-        stripped = line.strip().lower()
-        if stripped == "[wsl2]":
-            in_wsl2 = True
-            new_lines.append(line)
-            continue
-        if in_wsl2 and stripped.startswith("memory"):
-            new_lines.append(f"memory={mem}")
-            mem_written = True
-            in_wsl2 = False
-            continue
-        if in_wsl2 and stripped.startswith("["):
-            new_lines.append(f"memory={mem}")
-            mem_written = True
-            in_wsl2 = False
-        new_lines.append(line)
-
-    if not mem_written:
-        if "[wsl2]" not in [l.strip().lower() for l in new_lines]:
-            new_lines.append("[wsl2]")
-        new_lines.append(f"memory={mem}")
-
-    WSLCONFIG.write_text("\r\n".join(new_lines) + "\r\n", encoding="utf-8")
+    out: list[str] = []
+    for sec in order:
+        out.append(sec)
+        out.extend(f"{k}={v}" for k, v in sections[sec].items())
+        out.append("")  # blank line between sections
+    WSLCONFIG.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
 
     # Verify the write landed
     if read_wsl_memory() != mem:

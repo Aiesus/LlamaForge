@@ -3,11 +3,11 @@ llama-server lifecycle: build command, start, stop, log streaming, health check.
 No tkinter imports — all output via log_fn callbacks.
 """
 from __future__ import annotations
+import http.client
 import re
 import subprocess
 import threading
 import time
-import urllib.request
 import urllib.error
 from enum import Enum
 from typing import Callable
@@ -37,19 +37,28 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
     if not model:
         return ""
 
+    # Support full WSL paths (new) and bare filenames (legacy profiles)
+    model_path = model if ("/" in model) else f"{s.models_wsl}/{model}"
+    model_fname = model_path.split("/")[-1]
+
+    # GGML_CUDA_DISABLE_GRAPHS=1 fixes a per-request VRAM leak in the CUDA graph
+    # cache under MoE + speculative (draft-mtp). Must reach the binary through sudo,
+    # so it goes inside `env` for the prlimit branches.
+    graph_env = "GGML_CUDA_DISABLE_GRAPHS=1 " if p.get("disable_cuda_graphs") else ""
+
     if p.get("mlock") and s.cuda_swap:
-        launch_prefix = "sudo prlimit --memlock=unlimited:unlimited env CUDA_VISIBLE_DEVICES=1,0 "
+        launch_prefix = f"sudo prlimit --memlock=unlimited:unlimited env {graph_env}CUDA_VISIBLE_DEVICES=1,0 "
     elif p.get("mlock"):
-        launch_prefix = "sudo prlimit --memlock=unlimited:unlimited "
+        launch_prefix = "sudo prlimit --memlock=unlimited:unlimited " + (f"env {graph_env}" if graph_env else "")
     elif s.cuda_swap:
-        launch_prefix = "CUDA_VISIBLE_DEVICES=1,0 "
+        launch_prefix = f"{graph_env}CUDA_VISIBLE_DEVICES=1,0 "
     else:
-        launch_prefix = ""
-    alias = p.get("alias", "").strip() or (model[:-5] if model.lower().endswith(".gguf") else model)
+        launch_prefix = graph_env
+    alias = p.get("alias", "").strip() or (model_fname[:-5] if model_fname.lower().endswith(".gguf") else model_fname)
 
     parts = [
         f"cd {s.llama_root} && {launch_prefix}{llama_bin}",
-        f"-m {s.models_wsl}/{model}",
+        f"-m {model_path}",
         f"--alias {alias}",
         f"-ngl {p.get('ngl', 60)}",
         f"-c {p.get('ctx', 16384)}",
@@ -155,17 +164,24 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
         n = str(p.get("n_cpu_moe_n", "4")).strip()
         if n:
             parts.append(f"--n-cpu-moe {n}")
+    if p.get("override_expert_count"):
+        n = str(p.get("override_expert_count_n", "2")).strip()
+        if n:
+            parts.append(f"--override-kv llama.expert_used_count=int:{n}")
     if p.get("no_display_prompt"):
         parts.append("--no-display-prompt")
     if p.get("jinja"):
         parts.append("--jinja")
+    if p.get("reasoning_off"):
+        parts.append("--reasoning off")
     tc = p.get("tokenizer_config", "").strip()
     if tc:
         parts.append(f"--chat-template-file {tc}")
     if p.get("no_warmup"):
         parts.append("--no-warmup")
 
-    parts.append("-v")
+    if p.get("verbose_log"):
+        parts.append("-v")
 
     if p.get("flag_prio"):
         parts.append(f"--prio {p.get('flag_prio_level', '2')}")
@@ -360,22 +376,39 @@ class HealthChecker:
         self._running = False
 
     def _loop(self) -> None:
-        was_ok = False
+        was_ok   = False
+        conn: http.client.HTTPConnection | None = None
+        last_port: str = ""
+
         while self._running:
             is_ok = False
             if not (self._skip_fn and self._skip_fn()):
-                try:
-                    port    = self._port_fn()
-                    api_key = self._api_key_fn()
-                    req = urllib.request.Request(f"http://localhost:{port}/health")
-                    if api_key:
-                        req.add_header("Authorization", f"Bearer {api_key}")
-                    with urllib.request.urlopen(req, timeout=2) as r:
-                        is_ok = (r.status == 200)
-                except urllib.error.HTTPError:
-                    is_ok = False
-                except Exception:
-                    is_ok = False
+                port    = self._port_fn()
+                api_key = self._api_key_fn()
+                headers: dict[str, str] = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                # Recreate connection when port changes or connection was lost
+                if conn is None or port != last_port:
+                    if conn:
+                        try: conn.close()
+                        except Exception: pass
+                    try:
+                        conn = http.client.HTTPConnection("localhost", int(port), timeout=2)
+                    except Exception:
+                        conn = None
+                    last_port = port
+                if conn is not None:
+                    try:
+                        conn.request("GET", "/health", headers=headers)
+                        resp = conn.getresponse()
+                        resp.read()  # drain body to keep connection alive
+                        is_ok = (resp.status == 200)
+                    except Exception:
+                        is_ok = False
+                        try: conn.close()
+                        except Exception: pass
+                        conn = None  # will reconnect next cycle
 
             model = self._model_fn()
             if is_ok and not was_ok:
@@ -383,9 +416,17 @@ class HealthChecker:
                 self._log(f"[OK] Server healthy on port {self._port_fn()}", "success")
             elif not is_ok and was_ok:
                 self._status_fn("stopped", "")
+                if conn:
+                    try: conn.close()
+                    except Exception: pass
+                    conn = None
 
             was_ok = is_ok
             time.sleep(self._interval)
+
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 
 # ── Diagnostics ───────────────────────────────────────────────────────────────

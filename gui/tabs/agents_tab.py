@@ -48,6 +48,7 @@ class AgentsTab:
         # Agent list
         self._agent_frame = tk.Frame(top, bg=T["bg3"])
         self._agent_frame.pack(fill="both", expand=True)
+        self._status_labels: dict[str, tk.Label] = {}
 
         self._refresh_list()
         self._frame.after(0, self._start_monitor)
@@ -58,6 +59,7 @@ class AgentsTab:
         T = self._T
         for w in self._agent_frame.winfo_children():
             w.destroy()
+        self._status_labels.clear()
 
         for i, agent in enumerate(self._state.agents):
             self._build_agent_row(self._agent_frame, agent, i)
@@ -74,9 +76,11 @@ class AgentsTab:
         row = tk.Frame(parent, bg=T["bg3"])
         row.pack(fill="x", padx=6, pady=3)
 
-        # Status pill
-        tk.Label(row, text=f"  {pill_tx}  ", bg=pill_bg, fg=T["bg"],
-                 font=("Consolas", 8, "bold")).pack(side="left", padx=(0, 6))
+        # Status pill — store reference for in-place updates
+        status_lbl = tk.Label(row, text=f"  {pill_tx}  ", bg=pill_bg, fg=T["bg"],
+                               font=("Consolas", 8, "bold"))
+        status_lbl.pack(side="left", padx=(0, 6))
+        self._status_labels[name] = status_lbl
 
         # Agent name
         tk.Label(row, text=name, bg=T["bg3"], fg=T["fg"],
@@ -109,6 +113,16 @@ class AgentsTab:
                       command=lambda a=agent: self._open_ui(a)
                       ).pack(side="left", padx=2)
 
+    def _update_statuses(self, new_external: set[str]) -> None:
+        T = self._T
+        for name, lbl in self._status_labels.items():
+            proc    = self._procs.get(name)
+            running = agents_core.is_running(proc) or name in new_external
+            lbl.config(
+                text=f"  {'RUNNING' if running else 'STOPPED'}  ",
+                bg=T["green"] if running else T["red"],
+            )
+
     # ── Background monitor ─────────────────────────────────────────────────────
 
     def _start_monitor(self) -> None:
@@ -116,9 +130,9 @@ class AgentsTab:
             while self._monitor_active:
                 new_external: set[str] = set()
                 for agent in self._state.agents:
-                    name        = agent.get("name", "")
-                    agent_type  = agent.get("type", "")
-                    pattern     = agents_core._AGENT_PROCESS_PATTERNS.get(agent_type)
+                    name       = agent.get("name", "")
+                    agent_type = agent.get("type", "")
+                    pattern    = agents_core._AGENT_PROCESS_PATTERNS.get(agent_type)
                     if not pattern:
                         continue
                     proc = self._procs.get(name)
@@ -129,7 +143,8 @@ class AgentsTab:
                 if new_external != self._external_running:
                     self._external_running = new_external
                     try:
-                        self._frame.after(0, self._refresh_list)
+                        # Update only the status labels in-place — no widget rebuild
+                        self._frame.after(0, lambda e=new_external: self._update_statuses(e))
                     except Exception:
                         pass
                 time.sleep(3)
