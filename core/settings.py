@@ -177,6 +177,31 @@ class AppSettings:
         win_path = path.lstrip("/").replace("/", "\\")
         return rf"\\wsl.localhost\{self.wsl_distro}\{win_path}"
 
+    def unc_to_wsl(self, win_path: str) -> str:
+        """Inverse of wsl_path_to_unc: a Windows path (drive letter or
+        \\wsl.localhost / \\wsl$ UNC) → a WSL path. Returns '' if unmappable."""
+        if not win_path:
+            return ""
+        p = win_path.strip().strip('"')
+        # \\wsl.localhost\<distro>\rest  or  \\wsl$\<distro>\rest
+        m = re.match(r"^\\\\wsl(?:\.localhost|\$)\\[^\\]+\\(.*)$", p)
+        if m:
+            wsl = "/" + m.group(1).replace("\\", "/")
+            home = f"/home/{self.wsl_user}"
+            if self.wsl_user and (wsl == home or wsl.startswith(home + "/")):
+                wsl = "~" + wsl[len(home):]      # collapse /home/<user> → ~
+            return wsl.rstrip("/") or "/"
+        # Drive letter: X:\rest → /mnt/x/rest
+        m = re.match(r"^([A-Za-z]):[\\/]?(.*)$", p)
+        if m:
+            drive = m.group(1).lower()
+            rest  = m.group(2).replace("\\", "/").rstrip("/")
+            return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
+        # Already WSL-style
+        if p.startswith(("/", "~")):
+            return p
+        return ""
+
     @property
     def all_library_uncs(self) -> list:
         """Return [(wsl_path, unc_path), ...] for every configured library."""

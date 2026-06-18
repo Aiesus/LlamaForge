@@ -126,25 +126,20 @@ class LeftPanel:
 
         self._build_models_section()
         _sep(self._ctrl_col, T)
-        self._build_server_section()
-        _sep(self._ctrl_col, T)
-        self._build_profiles_section()
-        _sep(self._ctrl_col, T)
-        self._build_download_section()
-        _sep(self._ctrl_col, T)
-        self._build_utilities_section()
+        self._build_run_row()
+        self._build_tools_row()
 
     def update_server_status(self, state: str) -> None:
         try:
             T = self._T
             if state == "running":
-                self._server_btn.config(text="■  Unload", bg=T["red"],
+                self._server_btn.config(text="■ Unload", bg=T["red"],
                                         fg=T["bg"], state="normal")
             elif state == "loading":
-                self._server_btn.config(text="⏳  Loading…", bg=T["yellow"],
+                self._server_btn.config(text="⏳ …", bg=T["yellow"],
                                         fg=T["bg"], state="disabled")
             else:  # stopped / error / crashed / unknown
-                self._server_btn.config(text="▶  Load Model", bg=T["green"],
+                self._server_btn.config(text="▶ Load", bg=T["green"],
                                         fg=T["bg"], state="normal")
         except Exception:
             pass
@@ -361,21 +356,46 @@ class LeftPanel:
         LibraryManager(self._root, self._state, self._T,
                        on_close=self.refresh_models, log_fn=self._log).show()
 
-    # ── Server controls ───────────────────────────────────────────────────────
+    # ── Run row: Load/Unload + profile + save/delete ──────────────────────────
 
-    def _build_server_section(self) -> None:
+    def _build_run_row(self) -> None:
         T = self._T
-        _section(self._ctrl_col, "LLAMA SERVER", T)
+        row = tk.Frame(self._ctrl_col, bg=T["bg2"])
+        row.pack(fill="x", padx=8, pady=(4, 2))
 
-        # One state-aware button: Load → Loading… → Unload (driven by
-        # update_server_status). The header shows status text separately.
+        # State-aware Load/Unload. Fixed width so the text swaps don't reflow
+        # the row (driven by update_server_status).
         self._server_btn = tk.Button(
-            self._ctrl_col, text="▶  Load Model",
+            row, text="▶ Load", width=8,
             bg=T["green"], fg=T["bg"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 10, "bold"), pady=5,
+            font=("Segoe UI", 10, "bold"), pady=4,
             command=self._toggle_server,
         )
-        self._server_btn.pack(fill="x", padx=8, pady=3)
+        self._server_btn.pack(side="left", padx=(0, 4))
+        ToolTip(self._server_btn, "Load / Unload the selected model.")
+
+        # Active profile (expands to fill the row).
+        self._profile_combo = ttk.Combobox(
+            row, textvariable=self._state.profile_var,
+            state="readonly", font=("Segoe UI", 9),
+        )
+        self._profile_combo.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        self._profile_combo.bind("<<ComboboxSelected>>", self._on_profile_select)
+        ToolTip(self._profile_combo, "Active profile (server settings preset).")
+        self._refresh_profile_list()
+
+        save_btn = tk.Button(
+            row, text="💾", bg=T["btn"], fg=T["btn_fg"], relief="flat",
+            cursor="hand2", font=("Segoe UI", 11), command=self._save_profile,
+        )
+        save_btn.pack(side="left", padx=1)
+        ToolTip(save_btn, "Save current settings as a profile")
+        del_btn = tk.Button(
+            row, text="🗑", bg=T["btn"], fg=T["red"], relief="flat",
+            cursor="hand2", font=("Segoe UI", 11), command=self._delete_profile,
+        )
+        del_btn.pack(side="left", padx=1)
+        ToolTip(del_btn, "Delete the selected profile")
 
     def _toggle_server(self) -> None:
         ctrl = self._state.server_ctrl
@@ -401,32 +421,7 @@ class LeftPanel:
         if ctrl:
             ctrl.stop()
 
-    # ── Profiles ──────────────────────────────────────────────────────────────
-
-    def _build_profiles_section(self) -> None:
-        T = self._T
-        _section(self._ctrl_col, "PROFILES", T)
-
-        self._profile_combo = ttk.Combobox(
-            self._ctrl_col, textvariable=self._state.profile_var,
-            state="readonly", font=("Segoe UI", 9), width=18,
-        )
-        self._profile_combo.pack(fill="x", padx=8, pady=3)
-        self._profile_combo.bind("<<ComboboxSelected>>", self._on_profile_select)
-        self._refresh_profile_list()
-
-        btn_row = tk.Frame(self._ctrl_col, bg=T["bg2"])
-        btn_row.pack(fill="x", padx=8, pady=3)
-        tk.Button(
-            btn_row, text="Save", bg=T["btn"], fg=T["btn_fg"],
-            relief="flat", cursor="hand2", font=("Segoe UI", 9),
-            command=self._save_profile,
-        ).pack(side="left", expand=True, fill="x", padx=(0, 2))
-        tk.Button(
-            btn_row, text="Delete", bg=T["btn"], fg=T["red"],
-            relief="flat", cursor="hand2", font=("Segoe UI", 9),
-            command=self._delete_profile,
-        ).pack(side="left", expand=True, fill="x", padx=(2, 0))
+    # ── Profiles (helpers; UI lives in the run row) ────────────────────────────
 
     def _refresh_profile_list(self) -> None:
         names = list(self._state.profiles.keys())
@@ -467,34 +462,23 @@ class LeftPanel:
                 self._refresh_profile_list()
                 self._log(f"[PROFILE] Deleted: {name}", "warn")
 
-    # ── Download ──────────────────────────────────────────────────────────────
+    # ── Tools row: Download + utility icons ────────────────────────────────────
 
-    def _build_download_section(self) -> None:
+    def _build_tools_row(self) -> None:
         T = self._T
-        tk.Button(
-            self._ctrl_col, text="⬇  Download Models",
-            bg=T["btn"], fg=T["accent"], relief="flat", cursor="hand2",
-            font=("Segoe UI", 9, "bold"), pady=4,
-            command=self._open_downloader,
-        ).pack(fill="x", padx=8, pady=(4, 8))
-
-    def _open_downloader(self) -> None:
-        from gui.download_manager import DownloadManager
-        DownloadManager(self._root, self._state, self._T,
-                        log_fn=self._log,
-                        on_complete=self.refresh_models).show()
-
-    # ── Utilities ─────────────────────────────────────────────────────────────
-
-    def _build_utilities_section(self) -> None:
-        T = self._T
-        _section(self._ctrl_col, "TOOLS", T)
-
         from core.settings import CRASH_LOG
         has_crashes = CRASH_LOG.exists() and CRASH_LOG.stat().st_size > 0
 
         row = tk.Frame(self._ctrl_col, bg=T["bg2"])
         row.pack(fill="x", padx=8, pady=(2, 8))
+
+        dl_btn = tk.Button(
+            row, text="⬇ Download", bg=T["btn"], fg=T["accent"], relief="flat",
+            cursor="hand2", font=("Segoe UI", 9, "bold"), pady=4, padx=8,
+            command=self._open_downloader,
+        )
+        dl_btn.pack(side="left", padx=(0, 6))
+        ToolTip(dl_btn, "Download models from Hugging Face")
 
         def _icon(text, fg, cmd, tip, bg=None):
             b = tk.Button(row, text=text, bg=bg or T["btn"], fg=fg,
@@ -523,6 +507,88 @@ class LeftPanel:
             "⚠", T["bg"] if has_crashes else T["btn_fg"],
             self._open_crash_log, "View the crash log.",
             bg=T["red"] if has_crashes else T["btn"])
+        self._reclaim_btn = _icon(
+            "🧹", T["green"], self._reclaim_disk,
+            "Reclaim disk space — compact the WSL virtual disk so space freed by\n"
+            "deleted/moved models is returned to your Windows drive.\n"
+            "(WSL2 disks never auto-shrink.) Shuts WSL down briefly; needs admin (UAC).")
+
+    def _open_downloader(self) -> None:
+        from gui.download_manager import DownloadManager
+        DownloadManager(self._root, self._state, self._T,
+                        log_fn=self._log,
+                        on_complete=self.refresh_models).show()
+
+    # ── Reclaim disk space (compact WSL vhdx) ──────────────────────────────────
+
+    def _reclaim_disk(self) -> None:
+        from core import disk
+        info = disk.vhdx_info(self._state.settings.wsl_distro)
+        if not info:
+            messagebox.showerror("Reclaim disk space",
+                                 "Couldn't locate the WSL disk (ext4.vhdx).",
+                                 parent=self._root)
+            return
+        drive   = info["drive"]
+        size_gb = info["logical"] / 1e9
+        free_gb = info["host_free"] / 1e9
+
+        # Guard against the deadlock case: compact needs scratch space and will
+        # hang on a nearly-full drive.
+        if free_gb < 10:
+            messagebox.showwarning(
+                "Not enough free space",
+                f"{drive} has only {free_gb:.0f} GB free. Compaction needs scratch "
+                f"space and can hang on a nearly-full drive.\n\n"
+                f"Free up space on {drive} (or move models to another drive) and try again.",
+                parent=self._root)
+            return
+
+        if not messagebox.askyesno(
+                "Reclaim disk space",
+                f"The WSL disk is {size_gb:.0f} GB on {drive} ({free_gb:.0f} GB free).\n\n"
+                f"Compacting returns space freed by deleted/moved models back to {drive}.\n\n"
+                f"This SHUTS DOWN WSL (stops any running model/server) and needs admin — "
+                f"you'll get a UAC prompt. It can take a few minutes.\n\nContinue?",
+                icon="warning", parent=self._root):
+            return
+
+        try:
+            self._reclaim_btn.config(state="disabled")
+        except Exception:
+            pass
+        self._log("[DISK] Shutting down WSL and compacting — accept the UAC prompt…", "info")
+
+        import threading, shutil
+        before = info["host_free"]
+
+        def _work():
+            ok, msg = disk.compact_vhdx(info["path"])
+            try:
+                after = shutil.disk_usage(drive + "\\").free
+            except Exception:
+                after = before
+            freed = (after - before) / 1e9
+            self._root.after(0, lambda: self._reclaim_done(ok, freed, msg))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _reclaim_done(self, ok: bool, freed_gb: float, msg: str) -> None:
+        try:
+            self._reclaim_btn.config(state="normal")
+        except Exception:
+            pass
+        if ok:
+            self._log(f"[DISK] Compaction complete — freed ~{max(freed_gb,0):.0f} GB.", "success")
+            messagebox.showinfo("Reclaim complete",
+                                f"Freed about {max(freed_gb,0):.0f} GB on disk.",
+                                parent=self._root)
+        else:
+            self._log(f"[DISK] Compaction failed: {msg}", "error")
+            messagebox.showerror(
+                "Reclaim failed",
+                f"{msg}\n\n(If WSL was busy, unload the model/stop the server and retry.)",
+                parent=self._root)
 
     def _open_llama_ui(self) -> None:
         import webbrowser

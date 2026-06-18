@@ -5,7 +5,7 @@ models inside them: browse, move between drives, delete.
 from __future__ import annotations
 import subprocess
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -332,7 +332,7 @@ class LibraryManager:
         options = [l for l in self._state.settings.model_libraries if l != exclude]
         win = tk.Toplevel(self._win)
         win.title("Move destination")
-        win.geometry("440x190")
+        win.geometry("460x220")
         win.configure(bg=T["bg"])
         win.transient(self._win)
         win.grab_set()
@@ -345,11 +345,35 @@ class LibraryManager:
         if options:
             combo.current(0)
 
-        tk.Label(win, text="…or a new path (e.g. /mnt/d/LLM-models):", bg=T["bg"],
+        tk.Label(win, text="…or pick a new folder (any drive):", bg=T["bg"],
                  fg=T["fg"], font=("Segoe UI", 9)).pack(anchor="w", padx=14, pady=(10, 2))
-        entry = tk.Entry(win, bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
+        path_row = tk.Frame(win, bg=T["bg"])
+        path_row.pack(fill="x", padx=14)
+        entry = tk.Entry(path_row, bg=T["entry_bg"], fg=T["entry_fg"], relief="flat",
                          font=("Consolas", 9), insertbackground=T["fg"])
-        entry.pack(fill="x", padx=14)
+        entry.pack(side="left", expand=True, fill="x")
+
+        def _browse():
+            start = self._state.settings.wsl_path_to_unc(exclude) or None
+            d = filedialog.askdirectory(parent=win, mustexist=False,
+                                        title="Pick destination folder",
+                                        initialdir=start)
+            if not d:
+                return
+            wsl = self._state.settings.unc_to_wsl(d)
+            if wsl:
+                entry.delete(0, tk.END)
+                entry.insert(0, wsl)
+            else:
+                messagebox.showwarning(
+                    "Unsupported location",
+                    f"Couldn't map this folder to a WSL path:\n{d}\n\n"
+                    "Pick a drive (e.g. D:\\…) or a \\\\wsl.localhost\\… folder.",
+                    parent=win)
+
+        tk.Button(path_row, text="Browse…", bg=T["btn"], fg=T["accent"], relief="flat",
+                  cursor="hand2", font=("Segoe UI", 9, "bold"), command=_browse).pack(
+                      side="left", padx=(6, 0))
 
         def _ok():
             new = entry.get().strip()
