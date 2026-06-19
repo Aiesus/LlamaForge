@@ -283,9 +283,10 @@ class ServerController:
         time.sleep(0.4)
 
         # Tee to a logfile so the output survives this GUI process (a later GUI
-        # instance can tail it to re-attach). tee passes through to our pipe, so
-        # live streaming + ready/t-s detection below are unaffected.
-        payload  = f"{inner_cmd} 2>&1 | tee {SERVER_LOG}"
+        # instance can tail it to re-attach). stdbuf -oL keeps tee line-buffered
+        # so the live log stays responsive (plain `tee` block-buffers its pipe
+        # to us, which made loads look sparse/slow).
+        payload  = f"{inner_cmd} 2>&1 | stdbuf -oL tee {SERVER_LOG}"
         full_cmd = f'wsl -d {self._distro} -u {self._user} bash -c "{payload}"'
         self._log(f"\n[LOAD] Starting: {model_name}", "info")
         self._log(f"[CMD]  {inner_cmd}", "info")
