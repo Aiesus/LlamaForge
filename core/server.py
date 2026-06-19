@@ -361,6 +361,7 @@ class ServerController:
                 line = line.rstrip()
                 if not line:
                     continue
+                low = line.lower()
                 keep, tag = classify_log_line(line)
                 if not keep:
                     continue
