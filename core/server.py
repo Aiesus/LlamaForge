@@ -68,7 +68,10 @@ def build_command(s: AppSettings, p: dict, llama_bin: str) -> str:
     alias = p.get("alias", "").strip() or (model_fname[:-5] if model_fname.lower().endswith(".gguf") else model_fname)
 
     parts = [
-        f"cd {s.llama_root} && {launch_prefix}{llama_bin}",
+        # stdbuf -oL -eL forces llama-server's own stdout/stderr to line-buffer,
+        # so load progress streams live and (critically) nothing is lost in a
+        # buffer if the process crashes mid-load.
+        f"cd {s.llama_root} && {launch_prefix}stdbuf -oL -eL {llama_bin}",
         f"-m {_qpath(model_path, s.wsl_user)}",
         f"--alias {shlex.quote(alias)}",
         f"-ngl {p.get('ngl', 60)}",
