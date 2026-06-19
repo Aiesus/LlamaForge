@@ -34,8 +34,9 @@ class Header:
         self._frame.pack(fill="x", padx=10, pady=(10, 5))
 
         # ── Status pills ──────────────────────────────────────────────────────
+        # Status is conveyed by color; text is just the loaded model (or ● when idle).
         self._server_pill = tk.Label(
-            self._frame, text="  STOPPED  ",
+            self._frame, text="  ●  ",
             bg=T["red"], fg=T["bg"], font=("Consolas", 10, "bold"),
             padx=6, pady=2
         )
@@ -59,24 +60,24 @@ class Header:
         temp_group = tk.Frame(self._frame, bg=T["bg2"]); temp_group.pack(side="left", padx=8)
 
         for i in range(2):
-            vram_bar = self._make_bar(vram_group, f"GPU {i} VRAM", T["bar_fg"])
+            vram_bar = self._make_bar(vram_group, f"G{i} VRAM", T["bar_fg"])
             vram_bar["outer"].pack(side="top", anchor="w", pady=(0, 3))
             self._gpu_vram_bars.append(vram_bar)
 
-            compute_bar = self._make_bar(load_group, f"GPU {i} Load", T["orange"])
+            compute_bar = self._make_bar(load_group, f"G{i} Load", T["orange"])
             compute_bar["outer"].pack(side="top", anchor="w", pady=(0, 3))
             compute_bar["text"].config(text="—")
             self._gpu_compute_bars.append(compute_bar)
 
             temp_outer = tk.Frame(temp_group, bg=T["bg2"])
             temp_outer.pack(side="top", anchor="w", pady=(0, 3))
-            temp_hdr = tk.Label(temp_outer, text=f"GPU {i} Temp", bg=T["bg2"], fg=T["fg2"],
-                                font=("Consolas", 9))
-            temp_hdr.pack(anchor="w")
+            temp_hdr = tk.Label(temp_outer, text=f"G{i} Temp", bg=T["bg2"], fg=T["fg2"],
+                                font=("Consolas", 9), width=8, anchor="w")
+            temp_hdr.pack(side="left")
             self._gpu_temp_hdr_labels.append(temp_hdr)
             temp_lbl = tk.Label(temp_outer, text="—°C",
                                 bg=T["bg2"], fg=T["fg2"], font=("Consolas", 10, "bold"))
-            temp_lbl.pack(anchor="w")
+            temp_lbl.pack(side="left", padx=(2, 0))
             self._gpu_temp_labels.append(temp_lbl)
 
             if i > 0:
@@ -117,18 +118,16 @@ class Header:
     def update_server_status(self, state: str, model: str = "") -> None:
         T = self._T
         try:
+            short = (model[:24] + "…") if len(model) > 25 else model
             if state == "stopped":
-                self._server_pill.config(
-                    text="  STOPPED  ", bg=T["red"], fg=T["bg"])
+                self._server_pill.config(text="  ●  ", bg=T["red"], fg=T["bg"])
                 self._tps_label.config(text="")
             elif state == "loading":
-                short = (model[:26] + "…") if len(model) > 28 else model
-                self._server_pill.config(
-                    text=f"  LOADING: {short}  ", bg=T["orange"], fg=T["bg"])
+                self._server_pill.config(text=f"  {short or '●'}  ",
+                                         bg=T["orange"], fg=T["bg"])
             elif state == "running":
-                short = (model[:26] + "…") if len(model) > 28 else model
-                self._server_pill.config(
-                    text=f"  RUNNING: {short}  ", bg=T["green"], fg=T["bg"])
+                self._server_pill.config(text=f"  {short or '●'}  ",
+                                         bg=T["green"], fg=T["bg"])
         except Exception:
             pass
 
@@ -148,24 +147,21 @@ class Header:
                 self._tok_req_lbl.config(text="server offline")
                 return
 
-            if not st.metrics_on:
-                # /slots works but /metrics is disabled — show what we can.
-                gen = f"gen {self._fmt_k(st.n_decoded)}" if st.processing else "idle"
-                self._tok_ctx_lbl.config(text="metrics off", fg=T["orange"])
-                self._tok_req_lbl.config(text=f"enable --metrics · {gen}")
-                return
-
-            pct = st.ctx_ratio * 100
-            color = (T["red"]    if pct > 90 else
-                     T["orange"] if pct > 70 else
-                     T["yellow"] if pct > 50 else
-                     T["green"])
-            self._tok_ctx_lbl.config(
-                text=f"{pct:.0f}%  {self._fmt_k(st.ctx_used)}/{self._fmt_k(st.n_ctx)}",
-                fg=color)
+            # Context fill comes from /slots, so it works even when /metrics is off.
+            if st.n_ctx and st.ctx_used:
+                pct = st.ctx_ratio * 100
+                color = (T["red"]    if pct > 90 else
+                         T["orange"] if pct > 70 else
+                         T["yellow"] if pct > 50 else
+                         T["green"])
+                self._tok_ctx_lbl.config(
+                    text=f"{pct:.0f}%  {self._fmt_k(st.ctx_used)}/{self._fmt_k(st.n_ctx)}",
+                    fg=color)
+            else:
+                self._tok_ctx_lbl.config(text="—", fg=T["fg2"])
 
             parts = []
-            if st.last_prompt:
+            if st.metrics_on and st.last_prompt:   # last-request size needs /metrics
                 parts.append(f"last req {self._fmt_k(st.last_prompt)}")
             parts.append(f"● gen {self._fmt_k(st.n_decoded)}" if st.processing else "idle")
             self._tok_req_lbl.config(text="  ·  ".join(parts))
@@ -190,13 +186,13 @@ class Header:
             swap = self._state.cuda_swap_var.get()
             # When swapped, display slot 0 = CUDA device 0 = physical GPU 1 (and vice versa)
             phys_order = [1, 0] if swap else [0, 1]
-            prefix     = "CUDA" if swap else "GPU"
+            prefix     = "C" if swap else "G"   # short: G0/G1 (or C0/C1 when swapped)
 
             for slot in range(len(self._gpu_vram_bars)):
                 phys = phys_order[slot] if slot < len(phys_order) else slot
-                self._gpu_vram_bars[slot]["label"].config(text=f"{prefix} {slot} VRAM")
-                self._gpu_compute_bars[slot]["label"].config(text=f"{prefix} {slot} Load")
-                self._gpu_temp_hdr_labels[slot].config(text=f"{prefix} {slot} Temp")
+                self._gpu_vram_bars[slot]["label"].config(text=f"{prefix}{slot} VRAM")
+                self._gpu_compute_bars[slot]["label"].config(text=f"{prefix}{slot} Load")
+                self._gpu_temp_hdr_labels[slot].config(text=f"{prefix}{slot} Temp")
 
                 if phys < len(snap.gpus):
                     gpu = snap.gpus[phys]
@@ -236,23 +232,25 @@ class Header:
 
     def _make_bar(self, parent: tk.Widget, label: str, color: str) -> dict:
         T = self._T
+        # Single row: label │ bar │ value — keeps the header short when stacked.
         outer = tk.Frame(parent, bg=T["bg2"])
-        hdr = tk.Label(outer, text=label, bg=T["bg2"], fg=T["fg2"], font=("Consolas", 9))
-        hdr.pack(anchor="w")
-        canvas = tk.Canvas(outer, bg=T["bar_bg"], width=140, height=14,
+        hdr = tk.Label(outer, text=label, bg=T["bg2"], fg=T["fg2"],
+                       font=("Consolas", 9), width=8, anchor="w")
+        hdr.pack(side="left")
+        canvas = tk.Canvas(outer, bg=T["bar_bg"], width=104, height=14,
                            highlightthickness=0, bd=0)
-        canvas.pack()
+        canvas.pack(side="left", padx=(2, 4))
         rect = canvas.create_rectangle(0, 0, 0, 14, fill=color, width=0)
         text_lbl = tk.Label(outer, text="— / —", bg=T["bg2"], fg=T["fg"],
-                            font=("Consolas", 9))
-        text_lbl.pack()
+                            font=("Consolas", 9), anchor="w")
+        text_lbl.pack(side="left")
         return {"outer": outer, "canvas": canvas, "rect": rect,
                 "text": text_lbl, "default_color": color, "label": hdr}
 
     def _update_bar(self, bar: dict, used, total, pct: float, unit: str) -> None:
         try:
             T = self._T
-            w = int(140 * pct)
+            w = int(104 * pct)
             color = (T["red"]    if pct > 0.9 else
                      T["orange"] if pct > 0.7 else
                      bar["default_color"])
@@ -261,11 +259,9 @@ class Header:
             if unit == "%":
                 bar["text"].config(text=f"{pct * 100:.0f}%")
             elif unit in ("MiB", "GiB"):
-                bar["text"].config(
-                    text=f"{used:.1f}/{total:.1f} {unit} ({pct*100:.0f}%)"
-                    if unit == "GiB"
-                    else f"{int(used):,}/{int(total):,} {unit} ({pct*100:.0f}%)"
-                )
+                used_g  = used / 1024 if unit == "MiB" else used
+                total_g = total / 1024 if unit == "MiB" else total
+                bar["text"].config(text=f"{pct*100:.0f}%  {used_g:.1f}/{total_g:.1f}G")
         except Exception:
             pass
 

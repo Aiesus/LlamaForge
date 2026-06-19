@@ -676,10 +676,14 @@ class LlamaApp:
         self._token_monitor.register(self._on_token_stats)
         self._token_monitor.start()
 
-        # Restore last profile
+        # Restore last profile (server settings), then prefer the user's actual
+        # last-selected model over the profile's model so a reboot shows what was
+        # really loaded/selected, not whatever model the profile happens to name.
         last = s.last_profile
         if last and last in self.state.profiles:
             self.state.apply_profile_dict(self.state.profiles[last])
+        if s.last_model:
+            self.state.model_var.set(s.last_model)
 
         # Adopt an already-running server (e.g. GUI was restarted while a model
         # stayed loaded) so the live log re-attaches instead of showing nothing.

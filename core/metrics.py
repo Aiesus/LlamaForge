@@ -133,11 +133,13 @@ class TokenMonitor:
             self._prev_prompt_total = None
             return st
         st.ok = True
+        slot_prompt = 0
         try:
             slots = json.loads(slots_raw)
             slot  = slots[0] if isinstance(slots, list) and slots else {}
             st.n_ctx      = int(slot.get("n_ctx", 0) or 0)
             st.processing = bool(slot.get("is_processing", False))
+            slot_prompt   = int(slot.get("n_prompt_tokens", 0) or 0)
             nt = slot.get("next_token") or []
             if isinstance(nt, list) and nt:
                 st.n_decoded = int(nt[0].get("n_decoded", 0) or 0)
@@ -171,5 +173,12 @@ class TokenMonitor:
                 elif kv_ratio is not None:
                     st.ctx_ratio = kv_ratio
                     st.ctx_used  = int(kv_ratio * st.n_ctx) if st.n_ctx else 0
+
+        # Fallback: builds without a kv_cache metric (e.g. the TurboQuant fork)
+        # don't report KV fill — derive it from the slot's current prompt tokens
+        # (+ tokens generated this turn).
+        if st.ctx_used == 0 and slot_prompt > 0:
+            st.ctx_used  = slot_prompt + st.n_decoded
+            st.ctx_ratio = (st.ctx_used / st.n_ctx) if st.n_ctx else 0.0
 
         return st
