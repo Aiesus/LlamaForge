@@ -228,6 +228,8 @@ _LOG_SUPPRESS = (
     "failed to mount", "see dmesg", "all tasks already finished",
     "stop: all tasks", "/api/v1/models", "/api/tags", "/v1/props",
     "log_server_r",
+    "all slots are idle",          # periodic idle poll — pure noise, floods the log
+    "update_slots: all slots",     # (defensive variant)
 )
 
 
