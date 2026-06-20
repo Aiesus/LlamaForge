@@ -520,6 +520,27 @@ class LeftPanel:
             "Reclaim disk space — compact the WSL virtual disk so space freed by\n"
             "deleted/moved models is returned to your Windows drive.\n"
             "(WSL2 disks never auto-shrink.) Shuts WSL down briefly; needs admin (UAC).")
+        _icon("⟳", T["yellow"], self._restart_wsl,
+              "Restart the WSL VM — fixes 'won't load / CUDA out of memory'\n"
+              "errors that persist even when VRAM looks free (WSL2 GPU-memory\n"
+              "fragmentation after a dirty restart). Stops any running model first.")
+
+    def _restart_wsl(self) -> None:
+        from core import wsl
+        if not messagebox.askyesno(
+            "Restart WSL",
+            "Shut down and restart the WSL VM?\n\n"
+            "This resets the GPU memory state — use it when a model won't load "
+            "with a CUDA out-of-memory error even though VRAM looks free.\n\n"
+            "Any running model will be stopped.",
+                parent=self._root, icon="warning"):
+            return
+        ctrl = self._state.server_ctrl
+        if ctrl and ctrl.state != ServerState.STOPPED:
+            ctrl.stop(silent=True)
+        s = self._state.settings
+        self._log("[WSL] Restarting WSL VM…", "warn")
+        wsl.restart_wsl(s.wsl_distro, s.wsl_user, self._log)
 
     def _open_downloader(self) -> None:
         from gui.download_manager import DownloadManager

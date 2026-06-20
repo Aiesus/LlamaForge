@@ -322,6 +322,48 @@ def fix_mlock(distro: str, log_fn: LogFn) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+# ── WSL VM management ─────────────────────────────────────────────────────────
+
+def restart_wsl(distro: str, user: str, log_fn: LogFn,
+                done_fn: Callable[[int], None] | None = None) -> None:
+    """Shut the WSL VM down and cold-start it. Resets the WSL2 GPU-memory state,
+    clearing the fragmentation that makes cudaMalloc OOM even when VRAM looks
+    free. Runs on a daemon thread. Any running llama-server dies with the VM, so
+    the caller should stop it first for a clean shutdown."""
+    import time
+
+    def _run():
+        log_fn("[WSL] Shutting down the WSL VM (resets GPU memory)…", "warn")
+        try:
+            subprocess.run(["wsl", "--shutdown"], capture_output=True, timeout=60)
+        except Exception as e:
+            log_fn(f"[WSL] Shutdown failed: {e}", "error")
+            if done_fn:
+                done_fn(1)
+            return
+        time.sleep(8)   # let the VM fully tear down before cold-starting
+        log_fn("[WSL] Cold-starting the VM…", "info")
+        try:
+            r = subprocess.run(
+                ["wsl", "-d", distro, "-u", user, "bash", "-c", "uptime"],
+                capture_output=True, text=True, timeout=90)
+            if r.returncode == 0:
+                log_fn(f"[WSL] Back up — {r.stdout.strip()}", "success")
+                if done_fn:
+                    done_fn(0)
+            else:
+                log_fn(f"[WSL] Cold-start returned {r.returncode}: "
+                       f"{(r.stderr or '').strip()}", "error")
+                if done_fn:
+                    done_fn(1)
+        except Exception as e:
+            log_fn(f"[WSL] Cold-start failed: {e}", "error")
+            if done_fn:
+                done_fn(1)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 # ── WSL memory (.wslconfig) ───────────────────────────────────────────────────
 
 from pathlib import Path as _Path
