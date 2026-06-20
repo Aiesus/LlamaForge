@@ -241,6 +241,9 @@ class LibraryManager:
         if not path:
             return
         s = self._state.settings
+        # Be forgiving: if the user pasted a Windows/UNC path (\\wsl.localhost\...
+        # or D:\...), convert it to the WSL path that model_libraries requires.
+        path = s.unc_to_wsl(path) or path
         if path in s.model_libraries:
             messagebox.showwarning("Duplicate", f"'{path}' is already a library.", parent=self._win)
             return
