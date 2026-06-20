@@ -92,7 +92,10 @@ def build_move_cmd(srcs: list[str], dest_dir: str, user: str,
     if use_rsync:
         # -rt (not -a): skip perms/owner/group preservation, which is noisy and
         # meaningless on a drvfs (/mnt) target. Explicit file args + dir dest.
-        copy = f"rsync -rt --info=progress2 --no-inc-recursive {esrcs} {qdest}/"
+        # NO --info=progress2: its \r-flood of progress lines backs up the
+        # wsl->python streaming pipe on long (multi-GB) transfers and kills the
+        # copy mid-stream (rsync exits 1 around ~80%). Quiet rsync streams fine.
+        copy = f"rsync -rt {esrcs} {qdest}/"
     else:
         copy = f"cp {esrcs} {qdest}/"
     return f"mkdir -p {qdest} && {copy}"

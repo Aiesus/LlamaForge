@@ -114,9 +114,11 @@ class MoveDialog:
         # Start copy
         cmd = lm.build_move_cmd(self._srcs, self._dest, u, self._use_rsync)
         self._set_status(f"Copying with {'rsync' if self._use_rsync else 'cp'}…")
-        if not self._use_rsync:
-            self._root.after(0, lambda: self._bar.config(mode="indeterminate"))
-            self._root.after(0, self._bar.start)
+        # rsync is now run quietly (the --info=progress2 \r-flood broke long
+        # transfers), so neither rsync nor cp emits a parseable %. Show an
+        # animated indeterminate bar for both.
+        self._root.after(0, lambda: self._bar.config(mode="indeterminate"))
+        self._root.after(0, self._bar.start)
         self._log(f"[MOVE] {cmd}", "info")
 
         wsl.stream_async(d, u, cmd, self._on_copy_line,
@@ -186,6 +188,7 @@ class MoveDialog:
         self._log(f"[MOVE] Done. {len(self._srcs)} file(s) moved; "
                   f"{res.changed_profiles} profile(s) repointed.", "success")
         try:
+            self._bar.stop()
             self._bar.config(mode="determinate", value=100)
         except Exception:
             pass
