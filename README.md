@@ -16,7 +16,9 @@ A Windows GUI for running local AI models with llama.cpp — model browser, one-
 - **Inline chat panel** — SSE-streaming chat built into the app. Auto-appears when the server is ready.
 - **Hermes Agent integration** — auto-detects install, auto-configures `config.yaml` on every model load, Electron + CLI backend launch.
 - **TurboQuant fork support** — switch between official llama.cpp and the TurboQuant fork (turbo KV cache).
+- **Model libraries** — manage multiple model folders across drives and move models between them (e.g., off a slow `/mnt/d` mount onto fast native ext4) with automatic profile path-remapping.
 - **Hardware optimizer** — runs llama-bench and logs results for comparing configurations.
+- **Maintenance tools** — reclaim WSL disk space (compact the vhdx), restart the WSL VM to clear GPU-memory fragmentation, and restart the tool-proxy.
 - **Debugging tools** — crash log viewer with badge, live log filter, copy log button.
 - **Help menu** — Quick Reference window and Re-run Setup Wizard.
 

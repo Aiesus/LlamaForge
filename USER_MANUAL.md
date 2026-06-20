@@ -211,12 +211,15 @@ Runs **llama-bench** to benchmark your hardware with the current model settings.
 
 | Button | What it does |
 |---|---|
-| **⬇ Download Models** | Opens the HuggingFace download manager |
+| **⬇ Download** | Opens the HuggingFace download manager |
+| **⊞ Libraries** | Manage model folders and move models between drives (e.g. slow `/mnt/d` → fast native ext4) with automatic profile path-remapping |
 | **🌐 llama UI** | Opens the llama.cpp built-in web UI in your browser |
-| **Restart Proxy** | Restarts the tool-call proxy (port 8088). Use if Hermes can't connect. |
-| **Diagnose** | Runs a connectivity check and prints results to the log |
-| **Theme** | Opens the theme picker |
-| **Crash Log** | Shows the crash log. Turns red if a crash has been recorded. |
+| **🔍 Diagnose** | Runs a connectivity check and prints results to the log |
+| **♻ Restart Proxy** | Restarts the tool-call proxy (port 8088). Use if Hermes/Cline can't connect. |
+| **🎨 Theme** | Theme and text size |
+| **⚠ Crash Log** | Shows the crash log. Turns red if a crash has been recorded. |
+| **🧹 Reclaim Disk** | Compacts the WSL virtual disk to return freed space to your Windows drive |
+| **⟳ Restart WSL** | Shuts down and restarts the WSL VM — clears GPU-memory fragmentation when a model won't load with "CUDA out of memory" even though VRAM looks free |
 
 ---
 
@@ -234,10 +237,15 @@ You can connect to your LlamaForge server from other devices on your network usi
 
 ## Troubleshooting
 
-### Model won't load
+### Model won't load — "CUDA out of memory" but VRAM looks free
+Usually **WSL2 GPU-memory fragmentation** — common after Windows sleeps/resumes or WSL restarts dirtily (you may also see `Failed to mount Z:` noise). The memory is free, but a large single allocation can't be made.
+- Click **⟳ Restart WSL** in the Tools section — this resets the GPU memory state and almost always fixes it.
+- **Permanent fix:** run your Windows display on the **integrated GPU** (plug the monitor into the motherboard's video output) so your NVIDIA card(s) are 100% dedicated to llama.cpp. This removes Windows/WSL contention for VRAM and stops the problem recurring.
+
+### Model won't load (other)
 - Check the log for error messages (red text).
 - Reduce **GPU Layers** — the model may not fit in your VRAM.
-- Reduce **Context** size.
+- Lower **batch / ubatch** (shrinks the compute buffer) before touching context.
 - Try a smaller quantization (Q4_K_M instead of Q8_0).
 
 ### Server stays in LOADING
